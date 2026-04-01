@@ -63,15 +63,12 @@ VTBL_SET_VOLUME = 28
 VTBL_RELEASE = 2
 
 
-def _call_vtbl(this_ptr, index, *args):
-    """Call a COM method by vtable index."""
+def _get_vtbl_func(this_ptr, index, restype, *argtypes):
+    """Get a COM method from the vtable with proper type signature."""
     vtbl = ctypes.cast(this_ptr, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p)))[0]
     method_ptr = vtbl[index]
-    # Create a function type: HRESULT func(this, ...)
-    arg_types = [ctypes.c_void_p] * (1 + len(args))
-    func_type = ctypes.WINFUNCTYPE(ctypes.c_long, *arg_types)
-    func = func_type(method_ptr)
-    return func(this_ptr, *args)
+    func_type = ctypes.WINFUNCTYPE(restype, ctypes.c_void_p, *argtypes)
+    return func_type(method_ptr)
 
 
 def _worker():
@@ -101,14 +98,27 @@ def _worker():
             _worker_powershell_fallback()
             return
 
-        # Set rate and volume
+        # Set rate: ISpVoice::SetRate(long Rate) -> HRESULT
         try:
-            _call_vtbl(voice_ptr.value, VTBL_SET_RATE, ctypes.c_long(_rate))
-            _call_vtbl(voice_ptr.value, VTBL_SET_VOLUME, ctypes.c_ushort(_volume))
+            set_rate_fn = _get_vtbl_func(voice_ptr.value, VTBL_SET_RATE, ctypes.c_long, ctypes.c_long)
+            set_rate_fn(voice_ptr.value, _rate)
         except Exception as e:
-            _log_error(f"Failed to set rate/volume: {e}")
+            _log_error(f"Failed to set rate: {e}")
+
+        # Set volume: ISpVoice::SetVolume(USHORT Volume) -> HRESULT
+        try:
+            set_vol_fn = _get_vtbl_func(voice_ptr.value, VTBL_SET_VOLUME, ctypes.c_long, ctypes.c_ushort)
+            set_vol_fn(voice_ptr.value, _volume)
+        except Exception as e:
+            _log_error(f"Failed to set volume: {e}")
 
         _log("SAPI voice initialized successfully")
+
+        # ISpVoice::Speak(LPCWSTR pwcs, DWORD dwFlags, ULONG* pulStreamNumber) -> HRESULT
+        speak_fn = _get_vtbl_func(
+            voice_ptr.value, VTBL_SPEAK, ctypes.c_long,
+            ctypes.c_wchar_p, ctypes.c_ulong, ctypes.c_void_p
+        )
 
         while _running:
             try:
@@ -119,9 +129,7 @@ def _worker():
             if not text:
                 # Empty text with interrupt = stop current speech
                 try:
-                    flags = SVSFlagsAsync | SVSFPurgeBeforeSpeak
-                    text_ptr = ctypes.c_wchar_p("")
-                    _call_vtbl(voice_ptr.value, VTBL_SPEAK, text_ptr, ctypes.c_ulong(flags), None)
+                    speak_fn(voice_ptr.value, "", SVSFlagsAsync | SVSFPurgeBeforeSpeak, None)
                 except Exception:
                     pass
                 continue
@@ -130,8 +138,7 @@ def _worker():
                 flags = SVSFlagsAsync
                 if interrupt:
                     flags |= SVSFPurgeBeforeSpeak
-                text_ptr = ctypes.c_wchar_p(text)
-                _call_vtbl(voice_ptr.value, VTBL_SPEAK, text_ptr, ctypes.c_ulong(flags), None)
+                speak_fn(voice_ptr.value, text, flags, None)
             except Exception as e:
                 _log_error(f"Speak failed: {e}")
 
@@ -141,7 +148,8 @@ def _worker():
     finally:
         if voice_ptr.value is not None:
             try:
-                _call_vtbl(voice_ptr.value, VTBL_RELEASE)
+                release_fn = _get_vtbl_func(voice_ptr.value, VTBL_RELEASE, ctypes.c_ulong)
+                release_fn(voice_ptr.value)
             except Exception:
                 pass
         try:
