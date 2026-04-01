@@ -157,3 +157,21 @@ mod = build_mod(
     description="Full screen reader and audio accessibility for blind players. TTS for all menus, inventory, skills, missions, HUD, and combat alerts.",
     auto_enable=True,
 )
+
+# =============================================================================
+# FORCE-ENABLE ON FIRST LOAD
+# =============================================================================
+# Accessibility mods MUST work immediately - blind players cannot navigate
+# the Mods menu to enable it manually. Force-enable at import time so TTS
+# starts the moment the game launches. auto_enable=True handles subsequent loads,
+# but this handles the very first install.
+
+try:
+    if not mod.is_enabled:
+        mod.enable()
+except Exception:
+    # If the mod object doesn't support is_enabled yet, just call on_enable directly
+    try:
+        on_enable()
+    except Exception:
+        pass
