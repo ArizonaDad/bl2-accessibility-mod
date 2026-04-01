@@ -300,10 +300,10 @@ def _execute_pending_action():
         except Exception as e:
             sdk_logging.info(f"[BL2A11y] onItemClick: {e}")
 
-        # Try extGenericButtonClicked (takes 1 arg: index)
+        # Try extGenericButtonClicked (takes 1 string arg)
         try:
-            movie.extGenericButtonClicked(idx)
-            sdk_logging.info(f"[BL2A11y] extGenericButtonClicked({idx}) called")
+            movie.extGenericButtonClicked(str(idx))
+            sdk_logging.info(f"[BL2A11y] extGenericButtonClicked('{idx}') called")
         except Exception as e:
             sdk_logging.info(f"[BL2A11y] extGenericButtonClicked: {e}")
 
@@ -529,6 +529,99 @@ def _on_pause_show(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
     tts.speak("Pause menu.", True)
 
 
+# =============================================================================
+# CHARACTER SELECT
+# =============================================================================
+
+_in_charsel = False
+_charsel_index = 0
+_characters = [
+    "Salvador the Gunzerker. Dual-wields any two guns.",
+    "Maya the Siren. Locks enemies in place with Phaselock.",
+    "Axton the Commando. Deploys a Sabre turret.",
+    "Zer0 the Assassin. Deploys a decoy and turns invisible.",
+    "Gaige the Mechromancer. Summons Deathtrap robot.",
+    "Krieg the Psycho. Transforms into a raging badass.",
+]
+_char_count = 6
+
+def _on_charsel_show(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
+    global _in_charsel, _charsel_index, _at_main_menu
+    _in_charsel = True
+    _charsel_index = 0
+    _at_main_menu = False
+    sdk_logging.info("[BL2A11y] Character select shown")
+    tts.speak("Character selection. W and S to browse characters. Enter to select.", True)
+    threading.Thread(target=_charsel_keyboard_thread, daemon=True, args=(obj,)).start()
+
+
+def _charsel_keyboard_thread(movie):
+    global _in_charsel, _charsel_index
+    import ctypes
+    import ctypes.wintypes
+    user32 = ctypes.windll.user32
+    user32.GetAsyncKeyState.restype = ctypes.wintypes.SHORT
+    user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
+    VK_W = 0x57
+    VK_S = 0x53
+    VK_UP = 0x26
+    VK_DOWN = 0x28
+    VK_RETURN = 0x0D
+    VK_LEFT = 0x25
+    VK_RIGHT = 0x27
+    VK_A = 0x41
+    VK_D = 0x44
+
+    keyboard_state = (ctypes.c_ubyte * 256)()
+
+    def _is_key_down(vk):
+        if user32.GetAsyncKeyState(vk) & 0x8000:
+            return True
+        user32.GetKeyboardState(keyboard_state)
+        if keyboard_state[vk] & 0x80:
+            return True
+        return False
+
+    sdk_logging.info("[BL2A11y] Character select keyboard thread started")
+    time.sleep(0.5)
+    tts.speak(_characters[0], True)
+
+    last_prev = False
+    last_next = False
+    last_enter = False
+
+    while _in_charsel:
+        time.sleep(0.05)
+        try:
+            prev_pressed = _is_key_down(VK_W) or _is_key_down(VK_UP) or _is_key_down(VK_A) or _is_key_down(VK_LEFT)
+            next_pressed = _is_key_down(VK_S) or _is_key_down(VK_DOWN) or _is_key_down(VK_D) or _is_key_down(VK_RIGHT)
+            enter_pressed = _is_key_down(VK_RETURN)
+
+            if prev_pressed and not last_prev:
+                _charsel_index = (_charsel_index - 1) % _char_count
+                tts.speak(_characters[_charsel_index], True)
+                sdk_logging.info(f"[BL2A11y] Character: {_charsel_index}")
+
+            if next_pressed and not last_next:
+                _charsel_index = (_charsel_index + 1) % _char_count
+                tts.speak(_characters[_charsel_index], True)
+                sdk_logging.info(f"[BL2A11y] Character: {_charsel_index}")
+
+            if enter_pressed and not last_enter:
+                char_names = ["Salvador", "Maya", "Axton", "Zer0", "Gaige", "Krieg"]
+                tts.speak(f"Selected {char_names[_charsel_index]}.", True)
+                sdk_logging.info(f"[BL2A11y] Character selected: {_charsel_index}")
+                _in_charsel = False
+
+            last_prev = prev_pressed
+            last_next = next_pressed
+            last_enter = enter_pressed
+        except Exception:
+            pass
+
+    sdk_logging.info("[BL2A11y] Character select keyboard thread ended")
+
+
 _cinematic_listener_started = False
 
 def _on_fullscreen_movie(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
@@ -687,6 +780,7 @@ _HOOKS = [
     ("Engine.PlayerController:NotifyLoadedWorld", hooks.Type.POST, "bl2a11y_loaded", _on_loading_complete),
     ("Engine.WorldInfo:PreCommitMapChange", hooks.Type.PRE, "bl2a11y_mapchange", _on_map_change),
     ("WillowGame.PauseGFxMovie:Start", hooks.Type.POST, "bl2a11y_pause", _on_pause_show),
+    ("WillowGame.CharacterSelectionReduxGFxMovie:Start", hooks.Type.POST, "bl2a11y_charsel", _on_charsel_show),
     # ShowFullScreenMovie removed — crashes during early startup
     # Tick hook for executing pending menu actions on main thread
     ("WillowGame.FrontendGFxMovie:OnTick", hooks.Type.POST, "bl2a11y_menu_tick", _on_tick),
