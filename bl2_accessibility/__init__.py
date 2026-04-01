@@ -5,6 +5,9 @@ BL2 Accessibility Mod - Full screen reader and audio accessibility for blind pla
 if True:
     assert __import__("mods_base").__version_info__ >= (1, 4)
 
+from unrealsdk import logging as sdk_logging
+sdk_logging.info("[BL2A11y] Module loading...")
+
 from mods_base import build_mod, hook, keybind, EInputEvent, SliderOption, BoolOption
 
 from . import tts
@@ -125,6 +128,7 @@ def stop_speech_key() -> None:
 
 def on_enable() -> None:
     """Called when the mod is enabled."""
+    sdk_logging.info("[BL2A11y] on_enable called")
     tts.init()
     tts.set_rate(speech_rate.value)
     tts.set_volume(speech_volume.value)
@@ -135,6 +139,7 @@ def on_enable() -> None:
     mission_reader.register_hooks()
     skill_tree_reader.register_hooks()
     vending_reader.register_hooks()
+    sdk_logging.info("[BL2A11y] All hooks registered, speaking intro")
     tts.speak("BL2 Accessibility Mod enabled. W A S D move. I J K L look. Spacebar fire. F interact. Tab inventory. F1 health. F2 ammo. F4 full status. F12 stop speech.", True)
 
 
@@ -169,12 +174,17 @@ mod = build_mod(
 # starts the moment the game launches. auto_enable=True handles subsequent loads,
 # but this handles the very first install.
 
+sdk_logging.info("[BL2A11y] Mod built, attempting force-enable...")
 try:
     if not mod.is_enabled:
+        sdk_logging.info("[BL2A11y] Mod not enabled, calling mod.enable()")
         mod.enable()
-except Exception:
-    # If the mod object doesn't support is_enabled yet, just call on_enable directly
+    else:
+        sdk_logging.info("[BL2A11y] Mod already enabled")
+except Exception as e:
+    sdk_logging.error(f"[BL2A11y] mod.enable() failed: {e}")
     try:
+        sdk_logging.info("[BL2A11y] Falling back to direct on_enable()")
         on_enable()
-    except Exception:
-        pass
+    except Exception as e2:
+        sdk_logging.error(f"[BL2A11y] on_enable() also failed: {e2}")
