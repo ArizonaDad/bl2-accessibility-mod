@@ -132,9 +132,22 @@ def _on_frontend_show(obj: UObject, args: WrappedStruct, ret, func: BoundFunctio
     if not _is_shift_setup_done():
         _mark_shift_done()
 
+    # Lower game volume so TTS can be heard
+    try:
+        pc = None
+        for p in unrealsdk.find_all("WillowPlayerController", exact=False):
+            pc = p
+            break
+        if pc is not None:
+            pc.ConsoleCommand("SetAudioGroupVolume Master 0.3")
+            pc.ConsoleCommand("SetAudioGroupVolume SFX 0.3")
+            pc.ConsoleCommand("SetAudioGroupVolume Music 0.2")
+            sdk_logging.info("[BL2A11y] Lowered game volume")
+    except Exception as e:
+        sdk_logging.info(f"[BL2A11y] Volume set failed: {e}")
+
     tts.speak(
-        "Main menu. Use up and down arrow keys to navigate. Press enter to select. "
-        "Items are: Continue, New Game, Downloadable Content, Mods, Options, Quit.",
+        "Main menu. Use up and down arrow keys or W and S to navigate. Press enter to select.",
         True
     )
 
@@ -417,6 +430,16 @@ def _on_pause_show(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
 
 def _on_fullscreen_movie(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
     _announce_once("splash", "Loading Borderlands 2.", True)
+    # Try to lower volume early
+    try:
+        for pc in unrealsdk.find_all("WillowPlayerController", exact=False):
+            if pc is not None:
+                pc.ConsoleCommand("SetAudioGroupVolume Master 0.3")
+                pc.ConsoleCommand("SetAudioGroupVolume SFX 0.3")
+                pc.ConsoleCommand("SetAudioGroupVolume Music 0.2")
+                break
+    except Exception:
+        pass
 
 
 # =============================================================================
