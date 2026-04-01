@@ -267,7 +267,10 @@ def _menu_keyboard_thread():
     """Thread that polls keyboard state to navigate the main menu."""
     global _menu_index, _at_main_menu
     import ctypes
+    import ctypes.wintypes
     user32 = ctypes.windll.user32
+    user32.GetAsyncKeyState.restype = ctypes.wintypes.SHORT
+    user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
 
     # Virtual key codes
     VK_UP = 0x26
@@ -275,22 +278,46 @@ def _menu_keyboard_thread():
     VK_RETURN = 0x0D
     VK_ESCAPE = 0x1B
 
+    # Also try W/S as alternative nav keys in case arrows are consumed
+    VK_W = 0x57
+    VK_S = 0x53
+
     sdk_logging.info("[BL2A11y] Menu keyboard thread started")
 
     # Announce initial selection
     time.sleep(0.5)
-    tts.speak("Continue", True)  # Index 0 = Continue
+    tts.speak("Continue. Use up and down arrows to navigate. Enter to select.", True)
 
     last_up = False
     last_down = False
     last_enter = False
+    log_counter = 0
 
     while _at_main_menu and not _game_loaded:
         time.sleep(0.05)  # 50ms poll = responsive
         try:
-            up_pressed = bool(user32.GetAsyncKeyState(VK_UP) & 0x8000)
-            down_pressed = bool(user32.GetAsyncKeyState(VK_DOWN) & 0x8000)
-            enter_pressed = bool(user32.GetAsyncKeyState(VK_RETURN) & 0x8000)
+            # GetAsyncKeyState returns short — bit 15 = currently down
+            raw_up = user32.GetAsyncKeyState(VK_UP)
+            raw_down = user32.GetAsyncKeyState(VK_DOWN)
+            raw_enter = user32.GetAsyncKeyState(VK_RETURN)
+            raw_w = user32.GetAsyncKeyState(VK_W)
+            raw_s = user32.GetAsyncKeyState(VK_S)
+            up_pressed = bool(raw_up & 0x8000) or bool(raw_w & 0x8000)
+            down_pressed = bool(raw_down & 0x8000) or bool(raw_s & 0x8000)
+            enter_pressed = bool(raw_enter & 0x8000)
+
+            # Log occasionally to verify the thread is running
+            log_counter += 1
+            if log_counter % 200 == 0:  # Every 10 seconds
+                sdk_logging.info(f"[BL2A11y] Keyboard poll alive. up={raw_up} down={raw_down} enter={raw_enter}")
+
+            # Log any key press
+            if up_pressed and not last_up:
+                sdk_logging.info("[BL2A11y] UP arrow detected")
+            if down_pressed and not last_down:
+                sdk_logging.info("[BL2A11y] DOWN arrow detected")
+            if enter_pressed and not last_enter:
+                sdk_logging.info("[BL2A11y] ENTER detected")
 
             movie = None
             for m in unrealsdk.find_all("FrontendGFxMovie", exact=False):
