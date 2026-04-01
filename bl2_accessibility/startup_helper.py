@@ -30,6 +30,7 @@ _announced = set()
 _at_main_menu = False
 _game_loaded = False
 _shift_done_file = os.path.join(os.path.dirname(__file__), ".shift_done")
+_pending_action = -1  # Menu item index to activate on main thread
 
 
 def _announce_once(key: str, text: str, interrupt: bool = True):
@@ -244,50 +245,84 @@ def _set_menu_index(movie, idx):
 
 
 def _activate_menu_item(movie, idx):
-    """Activate (click) the currently selected menu item."""
-    global _at_main_menu
-    sdk_logging.info(f"[BL2A11y] Activating menu item {idx}")
+    """Queue a menu activation — must execute on main thread via tick hook."""
+    global _pending_action
+    sdk_logging.info(f"[BL2A11y] Queuing menu action {idx}")
+    _pending_action = idx
 
     if idx == 0:
-        # Continue
         tts.speak("Loading saved game.", True)
-        try:
-            movie.LaunchSaveGame(0)
-        except Exception:
-            try:
-                movie.OpenCharacterSelect()
-            except Exception:
-                pass
     elif idx == 1:
-        # New Game
         tts.speak("Starting new game.", True)
-        try:
-            movie.LaunchNewGame()
-        except Exception:
-            try:
-                movie.OpenCharacterSelect()
-            except Exception:
-                pass
     elif idx == 2:
-        # DLC
         tts.speak("Downloadable content.", True)
     elif idx == 3:
-        # Mods
         tts.speak("Mods menu.", True)
     elif idx == 4:
-        # Options
         tts.speak("Options.", True)
-        try:
-            movie.ShowOptions()
-        except Exception:
-            pass
     elif idx == 5:
-        # Quit
         tts.speak("Quitting game.", True)
-        try:
-            movie.ConfirmQuit_Clicked()
-        except Exception:
-            pass
+
+
+def _execute_pending_action():
+    """Execute queued menu action on main game thread. Called from tick hook."""
+    global _pending_action, _at_main_menu
+    if _pending_action < 0:
+        return
+    idx = _pending_action
+    _pending_action = -1
+    sdk_logging.info(f"[BL2A11y] Executing menu action {idx} on main thread")
+
+    try:
+        movie = None
+        for m in unrealsdk.find_all("FrontendGFxMovie", exact=False):
+            if m is not None:
+                movie = m
+                break
+        if movie is None:
+            sdk_logging.error("[BL2A11y] No FrontendGFxMovie found")
+            return
+
+        if idx == 0:
+            try:
+                movie.LaunchSaveGame(0)
+                sdk_logging.info("[BL2A11y] LaunchSaveGame(0) called on main thread")
+            except Exception as e:
+                sdk_logging.info(f"[BL2A11y] LaunchSaveGame: {e}")
+                try:
+                    movie.OpenCharacterSelect()
+                except Exception:
+                    pass
+        elif idx == 1:
+            try:
+                movie.LaunchNewGame()
+                sdk_logging.info("[BL2A11y] LaunchNewGame called on main thread")
+            except Exception as e:
+                sdk_logging.info(f"[BL2A11y] LaunchNewGame: {e}")
+                try:
+                    movie.OpenCharacterSelect()
+                except Exception:
+                    pass
+        elif idx == 4:
+            try:
+                movie.ShowOptions()
+                sdk_logging.info("[BL2A11y] ShowOptions called on main thread")
+            except Exception as e:
+                sdk_logging.info(f"[BL2A11y] ShowOptions: {e}")
+        elif idx == 5:
+            try:
+                movie.ConfirmQuit_Clicked()
+                sdk_logging.info("[BL2A11y] ConfirmQuit called on main thread")
+            except Exception as e:
+                sdk_logging.info(f"[BL2A11y] ConfirmQuit: {e}")
+    except Exception as e:
+        sdk_logging.error(f"[BL2A11y] Execute action error: {e}")
+
+
+def _on_tick(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
+    """Main thread tick — execute any pending menu actions."""
+    if _pending_action >= 0:
+        _execute_pending_action()
 
 
 def _menu_keyboard_thread():
@@ -495,7 +530,8 @@ _HOOKS = [
     ("Engine.WorldInfo:PreCommitMapChange", hooks.Type.PRE, "bl2a11y_mapchange", _on_map_change),
     ("WillowGame.PauseGFxMovie:Start", hooks.Type.POST, "bl2a11y_pause", _on_pause_show),
     ("Engine.GameViewportClient:ShowFullScreenMovie", hooks.Type.POST, "bl2a11y_fullscreen", _on_fullscreen_movie),
-    # Menu item reading now done via polling thread (GetVariableNumber on Flash movie)
+    # Tick hook for executing menu actions on main thread
+    ("Engine.GameViewportClient:Tick", hooks.Type.POST, "bl2a11y_tick", _on_tick),
 ]
 
 
