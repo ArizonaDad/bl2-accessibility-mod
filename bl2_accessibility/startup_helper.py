@@ -13,6 +13,7 @@ from unrealsdk.unreal import UObject, WrappedStruct, BoundFunction
 from . import tts
 
 _announced = set()
+_at_main_menu = False
 
 
 def _announce_once(key: str, text: str, interrupt: bool = True):
@@ -103,6 +104,8 @@ def _on_upsell_show(obj: UObject, args: WrappedStruct, ret, func: BoundFunction)
 
 def _on_frontend_show(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
     """FrontendGFxMovie shown — the main menu."""
+    global _at_main_menu
+    _at_main_menu = True
     sdk_logging.info("[BL2A11y] Frontend/main menu shown")
     _announced.discard("main_menu")
     _announce_once("main_menu",
@@ -180,6 +183,91 @@ def _on_pause_show(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
 
 
 # =============================================================================
+# RAW INPUT HOOK - works at ALL screens including menus
+# =============================================================================
+
+def _on_viewport_input_key(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
+    """
+    Fires on EVERY key press at every screen (menus, gameplay, everything).
+    Used to handle F7/F8 at main menu where mod keybinds don't work.
+    """
+    global _at_main_menu
+    try:
+        key = str(args.Key) if hasattr(args, 'Key') else ""
+        event = int(args.EventType) if hasattr(args, 'EventType') else -1
+
+        # IE_Pressed = 0
+        if event != 0:
+            return
+
+        sdk_logging.info(f"[BL2A11y Input] Key: {key}")
+
+        if key == "F7":
+            if _at_main_menu:
+                tts.speak("Continuing game.", True)
+                _at_main_menu = False
+                # Find and invoke Continue on the frontend movie
+                try:
+                    for movie in unrealsdk.find_all("FrontendGFxMovie", exact=False):
+                        if movie is None:
+                            continue
+                        for method in ['ContinueGame', 'OnContinueGame', 'LaunchContinue',
+                                       'SelectContinue', 'PlayGame', 'OnPlayGame',
+                                       'ContinueSavedGame', 'OnContinueSavedGame']:
+                            try:
+                                getattr(movie, method)()
+                                sdk_logging.info(f"[BL2A11y] Continue via {method}")
+                                return
+                            except Exception:
+                                continue
+                        # Try invoking via ActionScript
+                        try:
+                            movie.CallAS3("ContinueGame")
+                        except Exception:
+                            pass
+                        try:
+                            movie.Invoke("ContinueGame", None)
+                        except Exception:
+                            pass
+                except Exception as e:
+                    sdk_logging.error(f"[BL2A11y] Continue failed: {e}")
+                # Fallback: use console open command
+                try:
+                    pc = None
+                    for p in unrealsdk.find_all("WillowPlayerController", exact=False):
+                        pc = p
+                        break
+                    if pc is not None:
+                        pc.ConsoleCommand("open menudefaultmap")
+                except Exception:
+                    pass
+            return hooks.Block
+
+        elif key == "F8":
+            if _at_main_menu:
+                tts.speak("Starting new game.", True)
+                _at_main_menu = False
+                try:
+                    for movie in unrealsdk.find_all("FrontendGFxMovie", exact=False):
+                        if movie is None:
+                            continue
+                        for method in ['NewGame', 'OnNewGame', 'LaunchNewGame',
+                                       'SelectNewGame', 'StartNewGame', 'OnStartNewGame']:
+                            try:
+                                getattr(movie, method)()
+                                sdk_logging.info(f"[BL2A11y] New game via {method}")
+                                return
+                            except Exception:
+                                continue
+                except Exception as e:
+                    sdk_logging.error(f"[BL2A11y] New game failed: {e}")
+            return hooks.Block
+
+    except Exception as e:
+        sdk_logging.error(f"[BL2A11y Input] Error: {e}")
+
+
+# =============================================================================
 # HOOK REGISTRATION
 # All hooks use the :Start method which fires when a movie ACTUALLY opens.
 # =============================================================================
@@ -216,6 +304,9 @@ _HOOKS = [
 
     # Intro movies
     ("Engine.GameViewportClient:ShowFullScreenMovie", hooks.Type.POST, "bl2a11y_fullscreen_movie", _on_start_intro_movies),
+
+    # Raw input — works at ALL screens including menus (handles F7/F8)
+    ("Engine.GameViewportClient:HandleInputKey", hooks.Type.PRE, "bl2a11y_viewport_input", _on_viewport_input_key),
 ]
 
 
