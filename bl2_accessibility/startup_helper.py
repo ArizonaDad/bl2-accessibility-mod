@@ -67,15 +67,23 @@ def _poll_for_screens():
             except Exception as e:
                 sdk_logging.error(f"[BL2A11y Poll] find_all error: {e}")
 
-            # Also check for dialog boxes specifically
+            # Re-attempt dismissing known blocking popups every poll cycle
             try:
-                for dialog in unrealsdk.find_all("WillowGFxDialogBox", exact=False):
-                    if dialog is None:
+                for movie in unrealsdk.find_all("GFxMoviePlayer", exact=False):
+                    if movie is None:
                         continue
                     try:
-                        cls = str(dialog.Class.Name)
-                        sdk_logging.info(f"[BL2A11y Poll] Dialog found: {cls}")
-                        _announce_once("dialog_" + cls, "Dialog box. Press enter to accept or escape to cancel.", True)
+                        cls = str(movie.Class.Name).lower()
+                        visible = True
+                        try:
+                            visible = bool(movie.bMovieIsOpen) if hasattr(movie, 'bMovieIsOpen') else True
+                        except Exception:
+                            pass
+                        if not visible:
+                            continue
+                        # Keep trying to close blocking popups
+                        if any(x in cls for x in ["onlinemessage", "upsell", "dialog", "sparks"]):
+                            _try_close_movie(movie)
                     except Exception:
                         continue
             except Exception:
@@ -87,8 +95,38 @@ def _poll_for_screens():
     sdk_logging.info("[BL2A11y Startup] Polling thread stopped")
 
 
+def _try_close_movie(movie):
+    """Attempt to programmatically close/dismiss a GFx movie."""
+    # Try every known close method
+    for method_name in [
+        'Close', 'OnClose', 'CloseMovie', 'Dismiss', 'OnDismiss',
+        'Accept', 'OnAccept', 'AcceptClicked', 'OKClicked', 'OnOK',
+        'ExternalClose', 'ExtClose', 'ForceClose', 'CloseDialog',
+        'OnCancel', 'Cancel', 'Cancelled',
+    ]:
+        try:
+            fn = getattr(movie, method_name, None)
+            if fn is not None:
+                fn()
+                sdk_logging.info(f"[BL2A11y] Dismissed via {method_name}")
+                return True
+        except Exception:
+            continue
+    # Try setting visibility
+    try:
+        movie.bMovieIsOpen = False
+    except Exception:
+        pass
+    # Last resort: call Close with no args via the Unreal function system
+    try:
+        movie.Close(True)
+    except Exception:
+        pass
+    return False
+
+
 def _identify_and_announce(cls, name, lower_cls, lower_name, movie):
-    """Identify a GFx movie and announce it."""
+    """Identify a GFx movie and announce/dismiss it."""
     key = cls + "_" + name
 
     # Main menu / Frontend
@@ -96,28 +134,49 @@ def _identify_and_announce(cls, name, lower_cls, lower_name, movie):
         _announce_once("main_menu", "Main menu. Continue, New game, Downloadable content, Mods, Options, Quit. Use up and down arrows. Press enter to select.", True)
         return
 
-    # EULA / License
-    if "eula" in lower_cls or "eula" in lower_name or "license" in lower_cls:
-        _announce_once("eula", "License agreement. Press enter to accept.", True)
+    # Press Start screen — auto-dismiss it
+    if "pressstart" in lower_cls:
+        _announce_once("press_start", "Title screen. Press enter to start.", True)
         return
 
-    # Dialog box
+    # Online Message (Shift account popup) — AUTO-DISMISS
+    if "onlinemessage" in lower_cls:
+        _announce_once("online_msg", "Online message popup. Dismissing automatically.", True)
+        _try_close_movie(movie)
+        return
+
+    # Upsell / DLC promo — AUTO-DISMISS
+    if "upsell" in lower_cls:
+        _announce_once("upsell", "Promotional popup. Dismissing automatically.", True)
+        _try_close_movie(movie)
+        return
+
+    # EULA / License
+    if "eula" in lower_cls or "eula" in lower_name or "license" in lower_cls:
+        _announce_once("eula", "License agreement. Accepting automatically.", True)
+        _try_close_movie(movie)
+        return
+
+    # Dialog boxes — read text then auto-accept
     if "dialog" in lower_cls:
-        # Try to read dialog text
         text = ""
-        for attr in ['DialogText', 'MessageText', 'Body', 'Text', 'Description']:
+        for attr in ['DialogText', 'MessageText', 'Body', 'Text', 'Description',
+                      'sDialog', 'sMessage', 'sBody', 'DialogBody']:
             try:
                 val = getattr(movie, attr, None)
                 if val is not None:
-                    text = str(val).strip()
-                    if text:
+                    t = str(val).strip()
+                    if t and len(t) > 2:
+                        text = t
                         break
             except Exception:
                 continue
         if text:
-            _announce_once(key, f"Dialog. {text}. Press enter to accept or escape to cancel.", True)
+            _announce_once(key, f"Dialog. {text}. Accepting.", True)
         else:
-            _announce_once(key, "Dialog box. Press enter to accept or escape to cancel.", True)
+            _announce_once(key, "Dialog popup. Accepting.", True)
+        # Auto-accept dialog boxes to get through startup
+        _try_close_movie(movie)
         return
 
     # Pause menu
@@ -140,11 +199,6 @@ def _identify_and_announce(cls, name, lower_cls, lower_name, movie):
         _announce_once("status", "Status menu.", True)
         return
 
-    # Attract mode / press any key
-    if "attract" in lower_cls or "pressstart" in lower_cls or "pressanykey" in lower_name:
-        _announce_once("press_start", "Title screen. Press enter to start.", True)
-        return
-
     # Loading
     if "loading" in lower_cls or "loading" in lower_name:
         _announce_once("loading_" + name, "Loading.", True)
@@ -152,19 +206,25 @@ def _identify_and_announce(cls, name, lower_cls, lower_name, movie):
 
     # Sparks / SHIFT
     if "sparks" in lower_cls or "shift" in lower_cls:
-        _announce_once("shift", "Shift popup. Press escape to skip.", True)
+        _announce_once("shift", "Shift popup. Dismissing.", True)
+        _try_close_movie(movie)
         return
 
     # Ads / promo / MOTD
-    if "motd" in lower_cls or "ad" in lower_cls or "promo" in lower_cls or "upsell" in lower_cls:
-        _announce_once("promo", "Promotional popup. Press escape to dismiss.", True)
+    if "motd" in lower_cls or "promo" in lower_cls:
+        _announce_once("promo", "Promotional popup. Dismissing.", True)
+        _try_close_movie(movie)
         return
 
-    # HUD - don't announce
+    # WeaponScope — ignore silently
+    if "weaponscope" in lower_cls:
+        return
+
+    # HUD — ignore silently
     if "hud" in lower_cls or "hud" in lower_name:
         return
 
-    # Unknown - announce once
+    # Unknown movie — announce but don't dismiss
     friendly = cls.replace("GFxMovie", "").replace("Movie", "").replace("GFx", "")
     if friendly:
         _announce_once(key, f"{friendly} screen.", False)
