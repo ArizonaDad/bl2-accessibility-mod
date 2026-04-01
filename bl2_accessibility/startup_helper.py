@@ -206,6 +206,9 @@ def _on_frontend_show(obj: UObject, args: WrappedStruct, ret, func: BoundFunctio
     # Start keyboard navigation thread (uses GetAsyncKeyState for raw keyboard)
     threading.Thread(target=_menu_keyboard_thread, daemon=True).start()
 
+    # Start cinematic skip listener (safe to start here — game is loaded)
+    _start_cinematic_listener()
+
 
 # =============================================================================
 # MAIN MENU ITEM READING — hook into scrolling list focus changes
@@ -526,8 +529,115 @@ def _on_pause_show(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
     tts.speak("Pause menu.", True)
 
 
+_cinematic_listener_started = False
+
 def _on_fullscreen_movie(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
     _announce_once("splash", "Loading Borderlands 2.", True)
+
+
+def _start_cinematic_listener():
+    """Start a background listener that watches for cinematics and allows skipping.
+    Called from _on_frontend_show — safe because game is fully loaded by then."""
+    global _cinematic_listener_started
+    if _cinematic_listener_started:
+        return
+    _cinematic_listener_started = True
+    threading.Thread(target=_cinematic_skip_loop, daemon=True).start()
+    sdk_logging.info("[BL2A11y] Cinematic skip listener started")
+
+
+def _cinematic_skip_loop():
+    """Persistent background loop that detects cinematics and skips on keypress."""
+    import ctypes
+    import ctypes.wintypes
+    user32 = ctypes.windll.user32
+    user32.GetAsyncKeyState.restype = ctypes.wintypes.SHORT
+    user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
+    VK_RETURN = 0x0D
+    VK_ESCAPE = 0x1B
+    VK_SPACE = 0x20
+
+    announced_cinematic = False
+    last_enter = False
+    last_escape = False
+    last_space = False
+
+    while True:
+        time.sleep(0.1)
+        try:
+            # Check if a fullscreen movie is playing
+            movie_playing = False
+            try:
+                for gvc in unrealsdk.find_all("WillowGameViewportClient", exact=False):
+                    if gvc is None:
+                        continue
+                    try:
+                        # bFullScreenMoviePlaying property
+                        playing = getattr(gvc, 'bFullScreenMoviePlaying', None)
+                        if playing is not None and bool(playing):
+                            movie_playing = True
+                    except Exception:
+                        pass
+                    break
+            except Exception:
+                pass
+
+            if movie_playing and not announced_cinematic:
+                announced_cinematic = True
+                tts.speak("Cinematic playing. Press enter or space to skip.", True)
+                sdk_logging.info("[BL2A11y] Cinematic detected")
+
+            if not movie_playing:
+                announced_cinematic = False
+                last_enter = False
+                last_escape = False
+                last_space = False
+                continue
+
+            # Movie is playing — check for skip keys
+            enter = bool(user32.GetAsyncKeyState(VK_RETURN) & 0x8000)
+            escape = bool(user32.GetAsyncKeyState(VK_ESCAPE) & 0x8000)
+            space = bool(user32.GetAsyncKeyState(VK_SPACE) & 0x8000)
+
+            skip = False
+            if enter and not last_enter:
+                skip = True
+            if escape and not last_escape:
+                skip = True
+            if space and not last_space:
+                skip = True
+
+            last_enter = enter
+            last_escape = escape
+            last_space = space
+
+            if skip:
+                sdk_logging.info("[BL2A11y] Skipping cinematic via key")
+                tts.speak("Skipping.", True)
+                try:
+                    for gvc in unrealsdk.find_all("WillowGameViewportClient", exact=False):
+                        if gvc is None:
+                            continue
+                        try:
+                            gvc.HideFullScreenMovie()
+                            sdk_logging.info("[BL2A11y] HideFullScreenMovie called")
+                        except Exception as e:
+                            sdk_logging.info(f"[BL2A11y] HideFullScreenMovie: {e}")
+                        break
+                except Exception:
+                    pass
+                # Also try console command
+                try:
+                    for pc in unrealsdk.find_all("WillowPlayerController", exact=False):
+                        if pc is not None:
+                            pc.ConsoleCommand("disconnect")
+                            sdk_logging.info("[BL2A11y] disconnect command sent")
+                            break
+                except Exception:
+                    pass
+                announced_cinematic = False
+        except Exception:
+            pass
 
 
 # =============================================================================
