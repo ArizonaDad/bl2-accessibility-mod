@@ -321,8 +321,11 @@ def _execute_pending_action():
 
 def _on_tick(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
     """Main thread tick — execute any pending menu actions."""
-    if _pending_action >= 0:
-        _execute_pending_action()
+    try:
+        if _pending_action >= 0:
+            _execute_pending_action()
+    except Exception:
+        pass
 
 
 def _menu_keyboard_thread():
@@ -530,8 +533,8 @@ _HOOKS = [
     ("Engine.WorldInfo:PreCommitMapChange", hooks.Type.PRE, "bl2a11y_mapchange", _on_map_change),
     ("WillowGame.PauseGFxMovie:Start", hooks.Type.POST, "bl2a11y_pause", _on_pause_show),
     ("Engine.GameViewportClient:ShowFullScreenMovie", hooks.Type.POST, "bl2a11y_fullscreen", _on_fullscreen_movie),
-    # Tick hook for executing menu actions on main thread
-    ("Engine.GameViewportClient:Tick", hooks.Type.POST, "bl2a11y_tick", _on_tick),
+    # Tick hook for executing pending menu actions on main thread
+    ("WillowGame.FrontendGFxMovie:OnTick", hooks.Type.POST, "bl2a11y_menu_tick", _on_tick),
 ]
 
 
