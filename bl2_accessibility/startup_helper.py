@@ -175,70 +175,153 @@ def _on_frontend_show(obj: UObject, args: WrappedStruct, ret, func: BoundFunctio
             sdk_logging.error(f"[BL2A11y] Menu probe error: {e}")
     threading.Thread(target=_probe_menu, daemon=True).start()
 
-    # Start polling for menu selection changes
-    threading.Thread(target=_poll_menu_selection, daemon=True).start()
+    # Start keyboard navigation thread (uses GetAsyncKeyState for raw keyboard)
+    threading.Thread(target=_menu_keyboard_thread, daemon=True).start()
 
 
 # =============================================================================
 # MAIN MENU ITEM READING — hook into scrolling list focus changes
 # =============================================================================
 
-_last_menu_index = -1
+_menu_index = 0
+_menu_items = ["Continue", "New Game", "Downloadable Content", "Mods", "Options", "Quit"]
+_menu_item_count = 6
 
-def _poll_menu_selection():
-    """Periodically check the menu's selected index and read it aloud when it changes."""
-    global _last_menu_index
-    main_menu_items = [
-        "Continue",
-        "New Game",
-        "Downloadable Content",
-        "Mods",
-        "Options",
-        "Quit",
-    ]
+def _set_menu_index(movie, idx):
+    """Set the Flash menu selection index and announce it."""
+    global _menu_index
+    if idx < 0:
+        idx = _menu_item_count - 1
+    if idx >= _menu_item_count:
+        idx = 0
+    _menu_index = idx
 
-    while _at_main_menu and not _game_loaded:
-        time.sleep(0.3)
+    # Set the Flash variable to move the visual selection
+    try:
+        movie.SetVariableNumber("_root.FrontendMenu.TheList.selectedIndex", float(idx))
+    except Exception as e:
+        sdk_logging.info(f"[BL2A11y] SetVariableNumber failed: {e}")
+
+    # Also try ActionScriptVoid to call gotoAndStop or similar
+    try:
+        movie.ActionScriptVoid("_root.FrontendMenu.TheList.InvalidateData")
+    except Exception:
+        pass
+
+    # Announce the item
+    if idx < len(_menu_items):
+        tts.speak(_menu_items[idx], True)
+    else:
+        tts.speak(f"Item {idx + 1}", True)
+    sdk_logging.info(f"[BL2A11y] Menu selection set to {idx}: {_menu_items[idx] if idx < len(_menu_items) else 'unknown'}")
+
+
+def _activate_menu_item(movie, idx):
+    """Activate (click) the currently selected menu item."""
+    global _at_main_menu
+    sdk_logging.info(f"[BL2A11y] Activating menu item {idx}")
+
+    if idx == 0:
+        # Continue
+        tts.speak("Loading saved game.", True)
         try:
-            for movie in unrealsdk.find_all("FrontendGFxMovie", exact=False):
-                if movie is None:
-                    continue
-                # Try reading the selected index from Flash
-                idx = -1
-                for method_name in ['GetVariableNumber']:
-                    try:
-                        fn = getattr(movie, method_name, None)
-                        if fn is None:
-                            continue
-                        for path in ['_root.FrontendMenu.TheList.selectedIndex',
-                                     'FrontendMenu.TheList.selectedIndex',
-                                     'TheList.selectedIndex',
-                                     '_root.TheList.selectedIndex',
-                                     'selectedIndex']:
-                            try:
-                                val = fn(path)
-                                if val is not None:
-                                    idx = int(val)
-                                    if idx >= 0:
-                                        sdk_logging.info(f"[BL2A11y] Menu poll: {path} = {idx}")
-                                        break
-                            except Exception:
-                                continue
-                        if idx >= 0:
-                            break
-                    except Exception:
-                        continue
-
-                if idx >= 0 and idx != _last_menu_index:
-                    _last_menu_index = idx
-                    if idx < len(main_menu_items):
-                        tts.speak(main_menu_items[idx], True)
-                    else:
-                        tts.speak(f"Item {idx + 1}", True)
-                break  # Only check first frontend movie
+            movie.LaunchSaveGame(0)
+        except Exception:
+            try:
+                movie.OpenCharacterSelect()
+            except Exception:
+                pass
+    elif idx == 1:
+        # New Game
+        tts.speak("Starting new game.", True)
+        try:
+            movie.LaunchNewGame()
+        except Exception:
+            try:
+                movie.OpenCharacterSelect()
+            except Exception:
+                pass
+    elif idx == 2:
+        # DLC
+        tts.speak("Downloadable content.", True)
+    elif idx == 3:
+        # Mods
+        tts.speak("Mods menu.", True)
+    elif idx == 4:
+        # Options
+        tts.speak("Options.", True)
+        try:
+            movie.ShowOptions()
         except Exception:
             pass
-    sdk_logging.info("[BL2A11y] Menu poll thread ended")
+    elif idx == 5:
+        # Quit
+        tts.speak("Quitting game.", True)
+        try:
+            movie.ConfirmQuit_Clicked()
+        except Exception:
+            pass
+
+
+def _menu_keyboard_thread():
+    """Thread that polls keyboard state to navigate the main menu."""
+    global _menu_index, _at_main_menu
+    import ctypes
+    user32 = ctypes.windll.user32
+
+    # Virtual key codes
+    VK_UP = 0x26
+    VK_DOWN = 0x28
+    VK_RETURN = 0x0D
+    VK_ESCAPE = 0x1B
+
+    sdk_logging.info("[BL2A11y] Menu keyboard thread started")
+
+    # Announce initial selection
+    time.sleep(0.5)
+    tts.speak("Continue", True)  # Index 0 = Continue
+
+    last_up = False
+    last_down = False
+    last_enter = False
+
+    while _at_main_menu and not _game_loaded:
+        time.sleep(0.05)  # 50ms poll = responsive
+        try:
+            up_pressed = bool(user32.GetAsyncKeyState(VK_UP) & 0x8000)
+            down_pressed = bool(user32.GetAsyncKeyState(VK_DOWN) & 0x8000)
+            enter_pressed = bool(user32.GetAsyncKeyState(VK_RETURN) & 0x8000)
+
+            movie = None
+            for m in unrealsdk.find_all("FrontendGFxMovie", exact=False):
+                if m is not None:
+                    movie = m
+                    break
+
+            if movie is None:
+                continue
+
+            # Up arrow — move selection up
+            if up_pressed and not last_up:
+                _set_menu_index(movie, _menu_index - 1)
+
+            # Down arrow — move selection down
+            if down_pressed and not last_down:
+                _set_menu_index(movie, _menu_index + 1)
+
+            # Enter — activate
+            if enter_pressed and not last_enter:
+                _activate_menu_item(movie, _menu_index)
+
+            last_up = up_pressed
+            last_down = down_pressed
+            last_enter = enter_pressed
+
+        except Exception as e:
+            sdk_logging.error(f"[BL2A11y] Menu keyboard error: {e}")
+            time.sleep(1.0)
+
+    sdk_logging.info("[BL2A11y] Menu keyboard thread ended")
 
 
 # =============================================================================
