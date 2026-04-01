@@ -687,7 +687,7 @@ _HOOKS = [
     ("Engine.PlayerController:NotifyLoadedWorld", hooks.Type.POST, "bl2a11y_loaded", _on_loading_complete),
     ("Engine.WorldInfo:PreCommitMapChange", hooks.Type.PRE, "bl2a11y_mapchange", _on_map_change),
     ("WillowGame.PauseGFxMovie:Start", hooks.Type.POST, "bl2a11y_pause", _on_pause_show),
-    ("Engine.GameViewportClient:ShowFullScreenMovie", hooks.Type.POST, "bl2a11y_fullscreen", _on_fullscreen_movie),
+    # ShowFullScreenMovie removed — crashes during early startup
     # Tick hook for executing pending menu actions on main thread
     ("WillowGame.FrontendGFxMovie:OnTick", hooks.Type.POST, "bl2a11y_menu_tick", _on_tick),
 ]
