@@ -18,6 +18,7 @@ from . import mission_reader
 from . import skill_tree_reader
 from . import vending_reader
 from . import input_manager
+from . import startup_helper
 
 __version__: str = "0.1.0"
 __author__: str = "ArizonaDad"
@@ -132,6 +133,7 @@ def on_enable() -> None:
     tts.init()
     tts.set_rate(speech_rate.value)
     tts.set_volume(speech_volume.value)
+    startup_helper.register_hooks()
     input_manager.register_hooks()
     menu_reader.register_hooks()
     inventory_reader.register_hooks()
@@ -145,6 +147,7 @@ def on_enable() -> None:
 
 def on_disable() -> None:
     """Called when the mod is disabled."""
+    startup_helper.unregister_hooks()
     input_manager.unregister_hooks()
     menu_reader.unregister_hooks()
     inventory_reader.unregister_hooks()
