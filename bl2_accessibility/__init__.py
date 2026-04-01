@@ -206,8 +206,8 @@ def on_enable() -> None:
     mission_reader.register_hooks()
     skill_tree_reader.register_hooks()
     vending_reader.register_hooks()
-    sdk_logging.info("[BL2A11y] All hooks registered, speaking intro")
-    tts.speak("BL2 Accessibility Mod enabled. W A S D move. I J K L look. Spacebar fire. F interact. Tab inventory. F1 health. F2 ammo. F4 full status. F12 stop speech.", True)
+    sdk_logging.info("[BL2A11y] All hooks registered")
+    tts.speak("BL2 Accessibility Mod enabled.", True)
 
 
 def on_disable() -> None:
