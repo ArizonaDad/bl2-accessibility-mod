@@ -103,15 +103,48 @@ def _on_upsell_show(obj: UObject, args: WrappedStruct, ret, func: BoundFunction)
 # =============================================================================
 
 def _on_frontend_show(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
-    """FrontendGFxMovie shown — the main menu."""
+    """FrontendGFxMovie shown — the main menu. Try to auto-continue."""
     global _at_main_menu
     _at_main_menu = True
     sdk_logging.info("[BL2A11y] Frontend/main menu shown")
-    _announced.discard("main_menu")
-    _announce_once("main_menu",
-        "Main menu. Press F7 to continue your game. "
-        "Press F8 to start a new game. "
-        "Press escape for options.", True)
+    tts.speak("Main menu.", True)
+
+    # Try to directly invoke Continue on the frontend movie
+    continued = False
+    for method in ['ContinueGame', 'OnContinueGame', 'PlayGame', 'OnPlayGame',
+                   'LaunchContinue', 'SelectContinue', 'ContinueSavedGame']:
+        try:
+            getattr(obj, method)()
+            sdk_logging.info(f"[BL2A11y] Auto-continue via {method}")
+            tts.speak("Continuing game. Loading.", True)
+            continued = True
+            break
+        except Exception:
+            continue
+
+    if not continued:
+        # Try to find all methods on the frontend object
+        try:
+            methods = dir(obj)
+            sdk_logging.info(f"[BL2A11y] FrontendGFxMovie methods: {[m for m in methods if not m.startswith('_')]}")
+        except Exception:
+            pass
+        tts.speak("Main menu. Attempting to start game.", True)
+        # Try console commands
+        import threading
+        def _delayed_continue():
+            import time
+            time.sleep(2.0)
+            try:
+                # Try setting focus and simulating Enter
+                for pc in unrealsdk.find_all("WillowPlayerController", exact=False):
+                    if pc is not None:
+                        pc.ConsoleCommand("open menudefaultmap")
+                        sdk_logging.info("[BL2A11y] Console: open menudefaultmap")
+                        break
+            except Exception as e:
+                sdk_logging.error(f"[BL2A11y] Console continue failed: {e}")
+        threading.Thread(target=_delayed_continue, daemon=True).start()
 
 
 # =============================================================================
