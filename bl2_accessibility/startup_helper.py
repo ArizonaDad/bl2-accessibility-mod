@@ -58,6 +58,34 @@ def _mark_shift_done():
 # DELAYED PRESS-START DETECTION
 # =============================================================================
 
+def _lower_game_volume():
+    """Lower game volume by modifying profile settings. Safe approach."""
+    try:
+        # Wait for game to be ready
+        time.sleep(3.0)
+        for pc in unrealsdk.find_all("WillowPlayerController", exact=False):
+            if pc is None:
+                continue
+            try:
+                # Use profile settings (WPS = Willow Profile Setting)
+                profile = pc.GetCachedProfileSettings()
+                if profile is not None:
+                    # These are profile setting IDs for volume
+                    # WPS_MasterVolume, WPS_SFXVolume, WPS_MusicVolume, WPS_VOVolume
+                    for attr in ['MasterVolume', 'SFXVolume', 'MusicVolume']:
+                        try:
+                            # Try setting directly
+                            setattr(profile, attr, 0.3)
+                        except Exception:
+                            pass
+                sdk_logging.info("[BL2A11y] Attempted volume lower via profile")
+            except Exception:
+                pass
+            break
+    except Exception as e:
+        sdk_logging.info(f"[BL2A11y] Volume lower failed: {e}")
+
+
 def _delayed_press_start_check():
     time.sleep(12.0)
     if "main_menu" not in _announced and not _at_main_menu:
@@ -131,20 +159,6 @@ def _on_frontend_show(obj: UObject, args: WrappedStruct, ret, func: BoundFunctio
     # Mark SHiFT as done since we got past it
     if not _is_shift_setup_done():
         _mark_shift_done()
-
-    # Lower game volume so TTS can be heard
-    try:
-        pc = None
-        for p in unrealsdk.find_all("WillowPlayerController", exact=False):
-            pc = p
-            break
-        if pc is not None:
-            pc.ConsoleCommand("SetAudioGroupVolume Master 0.3")
-            pc.ConsoleCommand("SetAudioGroupVolume SFX 0.3")
-            pc.ConsoleCommand("SetAudioGroupVolume Music 0.2")
-            sdk_logging.info("[BL2A11y] Lowered game volume")
-    except Exception as e:
-        sdk_logging.info(f"[BL2A11y] Volume set failed: {e}")
 
     tts.speak(
         "Main menu. Use up and down arrow keys or W and S to navigate. Press enter to select.",
@@ -430,16 +444,6 @@ def _on_pause_show(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
 
 def _on_fullscreen_movie(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
     _announce_once("splash", "Loading Borderlands 2.", True)
-    # Try to lower volume early
-    try:
-        for pc in unrealsdk.find_all("WillowPlayerController", exact=False):
-            if pc is not None:
-                pc.ConsoleCommand("SetAudioGroupVolume Master 0.3")
-                pc.ConsoleCommand("SetAudioGroupVolume SFX 0.3")
-                pc.ConsoleCommand("SetAudioGroupVolume Music 0.2")
-                break
-    except Exception:
-        pass
 
 
 # =============================================================================
@@ -507,6 +511,7 @@ def register_hooks():
     except Exception:
         pass
     threading.Thread(target=_delayed_press_start_check, daemon=True).start()
+    threading.Thread(target=_lower_game_volume, daemon=True).start()
     sdk_logging.info("[BL2A11y Startup] All hooks registered")
 
 
