@@ -19,6 +19,8 @@ from . import tts
 _announced = set()
 _polling_active = False
 _poll_thread = None
+_press_start_active = False  # Track if PressStart screen is still showing
+_last_loading_announced = 0  # Timestamp of last loading announcement
 
 
 def _announce_once(key: str, text: str, interrupt: bool = True):
@@ -41,7 +43,10 @@ def _poll_for_screens():
     while _polling_active:
         time.sleep(1.5)
         try:
-            # Scan ALL GFxMoviePlayer instances
+            global _press_start_active
+            # Collect all active movies this cycle
+            active_classes = set()
+            movies_list = []
             try:
                 for movie in unrealsdk.find_all("GFxMoviePlayer", exact=False):
                     if movie is None:
@@ -56,16 +61,28 @@ def _poll_for_screens():
                             pass
                         if not visible:
                             continue
-
-                        lower_cls = cls.lower()
-                        lower_name = name.lower()
-                        sdk_logging.info(f"[BL2A11y Poll] Active movie: cls={cls} name={name}")
-
-                        _identify_and_announce(cls, name, lower_cls, lower_name, movie)
+                        active_classes.add(cls.lower())
+                        movies_list.append((cls, name, movie))
                     except Exception:
                         continue
             except Exception as e:
                 sdk_logging.error(f"[BL2A11y Poll] find_all error: {e}")
+
+            # Track press-start state
+            _press_start_active = "willowgfxmoviepressstart" in active_classes
+
+            # Check if we're in a loading state (no movies at all, or only minimal ones)
+            if len(movies_list) == 0:
+                _announce_once("loading_empty", "Loading.", True)
+
+            # Process each movie
+            for cls, name, movie in movies_list:
+                lower_cls = cls.lower()
+                lower_name = name.lower()
+                # Only log non-spammy ones
+                if "weaponscope" not in lower_cls:
+                    sdk_logging.info(f"[BL2A11y Poll] Active movie: cls={cls} name={name}")
+                _identify_and_announce(cls, name, lower_cls, lower_name, movie)
 
             # Re-attempt dismissing known blocking popups every poll cycle
             try:
@@ -129,20 +146,30 @@ def _identify_and_announce(cls, name, lower_cls, lower_name, movie):
     """Identify a GFx movie and announce/dismiss it."""
     key = cls + "_" + name
 
-    # Main menu / Frontend
+    # Main menu / Frontend — only announce when PressStart is gone
     if "frontend" in lower_cls:
-        _announce_once("main_menu", "Main menu. Continue, New game, Downloadable content, Mods, Options, Quit. Use up and down arrows. Press enter to select.", True)
+        if not _press_start_active:
+            _announce_once("main_menu", "Main menu. Continue, New game, Downloadable content, Mods, Options, Quit. Use up and down arrows. Press enter to select.", True)
         return
 
-    # Press Start screen — auto-dismiss it
+    # Press Start screen
     if "pressstart" in lower_cls:
-        _announce_once("press_start", "Title screen. Press enter to start.", True)
+        _announce_once("press_start", "Press any key to start.", True)
         return
 
-    # Online Message (Shift account popup) — AUTO-DISMISS
+    # Online Message (Shift account popup) — AUTO-DISMISS and keep retrying
     if "onlinemessage" in lower_cls:
-        _announce_once("online_msg", "Online message popup. Dismissing automatically.", True)
+        _announce_once("online_msg", "Online message. Dismissing.", True)
         _try_close_movie(movie)
+        # Also try clicking accept/ok buttons
+        try:
+            movie.AcceptClicked()
+        except Exception:
+            pass
+        try:
+            movie.OnAcceptClicked()
+        except Exception:
+            pass
         return
 
     # Upsell / DLC promo — AUTO-DISMISS
@@ -259,16 +286,26 @@ def _on_dialog_show(obj: UObject, args: WrappedStruct, ret, func: BoundFunction)
 
 
 def _on_loading_start(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
-    """Loading screen started."""
+    """Loading screen started — called on map transitions."""
+    tts.speak("Loading.", True)
+
+
+def _on_loading_movie(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
+    """Called when a loading movie/screen is shown."""
     tts.speak("Loading.", True)
 
 
 def _on_loading_complete(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
     """Loading finished."""
-    # Reset announced set so screens can re-announce
+    # Reset announced set so screens can re-announce on next visit
     _announced.discard("main_menu")
-    _announced.discard("loading")
+    _announced.discard("loading_empty")
     tts.speak("Loading complete.", True)
+
+
+def _on_map_change(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
+    """Called on map change / travel."""
+    tts.speak("Loading.", True)
 
 
 # =============================================================================
@@ -285,9 +322,20 @@ def register_hooks():
         hooks.Type.POST, "bl2a11y_frontend_start2", _on_frontend_start
     )
 
+    # Loading detection - multiple hooks for different loading scenarios
     hooks.add_hook(
         "Engine.PlayerController:NotifyLoadedWorld",
         hooks.Type.POST, "bl2a11y_loaded2", _on_loading_complete
+    )
+
+    hooks.add_hook(
+        "WillowGame.WillowPlayerController:WillowClientShowLoadingMovie",
+        hooks.Type.POST, "bl2a11y_loading_movie", _on_loading_movie
+    )
+
+    hooks.add_hook(
+        "Engine.WorldInfo:PreCommitMapChange",
+        hooks.Type.PRE, "bl2a11y_map_change", _on_map_change
     )
 
     # Start polling thread as fallback
@@ -304,3 +352,5 @@ def unregister_hooks():
 
     hooks.remove_hook("WillowGame.FrontendGFxMovie:Start", hooks.Type.POST, "bl2a11y_frontend_start2")
     hooks.remove_hook("Engine.PlayerController:NotifyLoadedWorld", hooks.Type.POST, "bl2a11y_loaded2")
+    hooks.remove_hook("WillowGame.WillowPlayerController:WillowClientShowLoadingMovie", hooks.Type.POST, "bl2a11y_loading_movie")
+    hooks.remove_hook("Engine.WorldInfo:PreCommitMapChange", hooks.Type.PRE, "bl2a11y_map_change")
