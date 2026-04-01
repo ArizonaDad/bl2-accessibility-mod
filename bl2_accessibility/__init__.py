@@ -14,6 +14,7 @@ from . import hud_reader
 from . import mission_reader
 from . import skill_tree_reader
 from . import vending_reader
+from . import input_manager
 
 __version__: str = "0.1.0"
 __author__: str = "ArizonaDad"
@@ -127,17 +128,19 @@ def on_enable() -> None:
     tts.init()
     tts.set_rate(speech_rate.value)
     tts.set_volume(speech_volume.value)
+    input_manager.register_hooks()
     menu_reader.register_hooks()
     inventory_reader.register_hooks()
     hud_reader.register_hooks()
     mission_reader.register_hooks()
     skill_tree_reader.register_hooks()
     vending_reader.register_hooks()
-    tts.speak("BL2 Accessibility Mod enabled. Press F1 for health, F2 for ammo, F3 for level, F4 for full status, F5 for mission, F12 to stop speech.", True)
+    tts.speak("BL2 Accessibility Mod enabled. W A S D move. I J K L look. Spacebar fire. F interact. Tab inventory. F1 health. F2 ammo. F4 full status. F12 stop speech.", True)
 
 
 def on_disable() -> None:
     """Called when the mod is disabled."""
+    input_manager.unregister_hooks()
     menu_reader.unregister_hooks()
     inventory_reader.unregister_hooks()
     hud_reader.unregister_hooks()

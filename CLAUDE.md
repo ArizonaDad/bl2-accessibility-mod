@@ -24,6 +24,7 @@ bl2-accessibility-mod/
 │   ├── mission_reader.py  # Mission log TTS
 │   ├── vending_reader.py  # Vending machine TTS
 │   ├── hud_reader.py      # HUD status readouts (health, shield, ammo, etc.)
+│   ├── input_manager.py   # Keyboard-only controls: WASD move, IJKL look, Spacebar fire
 │   ├── navigation.py      # Navigation beacons, compass, path assist (future)
 │   └── combat.py          # Combat audio, aim assist, enemy radar (future)
 ├── deploy.py              # Script to symlink/copy mod to BL2 sdk_mods
@@ -133,6 +134,65 @@ commands.add_command("mymod", my_command)
 ### World
 - `WillowGame.WillowGameInfo` — Current game state
 - `WillowGame.WillowGameReplicationInfo` — Replicated game state
+
+## Control Scheme (Keyboard-Only)
+
+### In-Game Controls
+| Key | Action |
+|-----|--------|
+| W | Move forward |
+| S | Move backward |
+| A | Strafe left |
+| D | Strafe right |
+| I | Look up |
+| J | Look left |
+| K | Look down |
+| L | Look right |
+| Spacebar | Fire weapon |
+| Q | Aim down sights (hold) |
+| R | Reload |
+| E | Jump |
+| C | Crouch (hold) |
+| F | Use / Interact |
+| V | Melee attack |
+| Left Shift | Sprint (hold) |
+| G | Throw grenade |
+| T | Action skill |
+| 1/2/3/4 | Switch weapon slot |
+| Tab | Open inventory / status menu |
+| Escape | Pause menu |
+| M | Mission log |
+
+### Menu Navigation
+| Key | Action |
+|-----|--------|
+| Up/Down arrows | Navigate menu items |
+| Left/Right arrows | Navigate tabs / options |
+| Enter | Select / confirm |
+| Escape / Backspace | Back / cancel |
+
+### Status Readout Keys
+| Key | Action |
+|-----|--------|
+| F1 | Read health and shield |
+| F2 | Read ammo count |
+| F3 | Read level and XP |
+| F4 | Read full status |
+| F5 | Read active mission |
+| F6 | Read skill tree |
+| F12 | Stop speech |
+
+### IJKL Look System (input_manager.py)
+- IJKL keys are intercepted via `Engine.PlayerInput:InputKey` PRE hook
+- Continuous rotation applied each tick via `WillowPlayerController:PlayerTick` POST hook
+- Yaw speed: 3.0 deg/tick, Pitch speed: 2.0 deg/tick
+- Pitch clamped to +-90 degrees to prevent camera flipping
+- Keys are consumed (blocked from reaching default bindings)
+
+### Keybinding System
+- Bindings applied via `ConsoleCommand("SetBind ...")` on game start
+- Applied on: `SpawningProcessComplete` and `NotifyLoadedWorld` hooks
+- Also attempted immediately at mod enable for mid-session loading
 
 ## TTS Integration Strategy
 - Use Windows SAPI via Python `comtypes` or `ctypes` to call `SpVoice`
