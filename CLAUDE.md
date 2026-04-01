@@ -215,8 +215,8 @@ commands.add_command("mymod", my_command)
 5. Check `sdk_mods/settings/` for saved mod options
 
 ## Phase 1: Menu Screen Reader (Current Priority)
-1. TTS engine integration (Windows SAPI)
-2. Main menu / pause menu reading
+1. TTS engine integration (Windows SAPI) — DONE (ctypes COM, no third-party deps)
+2. Main menu / pause menu reading — PARTIAL (announces, but can't navigate yet)
 3. Inventory screen reading (item names, stats, rarity)
 4. Skill tree reading
 5. Mission log reading
@@ -237,6 +237,61 @@ commands.add_command("mymod", my_command)
 - Health/shield ambient tones
 - Hit/kill confirmation sounds
 - FFYL directional ping
+
+## Known Issues & Debug Findings
+
+### TTS Engine
+- SDK bundles Python 3.13 with NO comtypes/win32com/pyttsx3
+- TTS uses ctypes COM directly: CoCreateInstance → ISpVoice vtable
+- Each method needs proper WINFUNCTYPE signature (not generic c_void_p)
+- PowerShell fallback available if COM fails
+- SAPI voice confirmed working
+
+### BL2 Startup Sequence (from logs)
+1. SDK loads (~20s after game launch)
+2. Intro movies play (logos) — `GameViewportClient:ShowFullScreenMovie`
+3. `WillowGFxMoviePressStart` — "Press any key" screen (`:Start` hook does NOT fire — already created before SDK loads)
+4. User presses key → press start dismisses
+5. `OnlineMessageGFxMovie:Start` fires — Shift account popup → auto-dismissed via `Close()`
+6. `UpsellNotificationGFxMovie:Start` fires — DLC promo → auto-dismissed via `Close()`
+7. `FrontendGFxMovie:Start` fires — Main menu appears
+
+### Critical: BL2 Menu Input Problem
+- **Scaleform/Flash menus handle keyboard input directly** — not through Unreal's event system
+- `Engine.GameViewportClient:HandleInputKey` — does NOT exist in BL2
+- `WillowGFxMovie:InputKey` — registered but never fires at main menu
+- `GFxMoviePlayer:FilterButtonInput` — registered but never fires at main menu
+- `mods_base` keybinds (F7/F8) — only work during gameplay with active PlayerController
+- **Result**: No way to intercept keyboard at main menu via SDK hooks
+
+### FrontendGFxMovie Methods (for navigating main menu)
+Key methods found via `dir()`:
+- `LaunchNewGame()` — starts new game (may need args)
+- `LaunchSaveGame(PlayThrough)` — load save, PlayThrough: 0=Normal, 1=TVHM, 2=UVHM
+- `LaunchSaveGameEx(...)` — extended save game load
+- `ConditionalLoadGame(LI, PlayerIndex)` — needs LoadInfo struct + player index
+- `OpenCharacterSelect()` — opens character selection
+- `OpenCharacterSelectFromList()` — character select from list
+- `ShowOptions()` — opens options menu
+- `OpenCredits()` — opens credits
+- `ConfirmQuit_Clicked()` — quit game
+- `ShowNetworkOptions()` — network options
+- `ShowLanBrowser()` — LAN browser
+- `OnInputKey(...)` — movie input handler
+- `InputKey(...)` — another input handler
+
+### find_all() Returns ALL Pre-Created Objects
+- `unrealsdk.find_all("GFxMoviePlayer", exact=False)` returns 50+ objects
+- ALL movies exist in memory from startup, whether visible or not
+- `bMovieIsOpen` property exists but doesn't reliably filter visible movies
+- Cannot use polling to detect which screen is shown
+- Must use `:Start` hooks which fire when a movie ACTUALLY opens
+
+### Console Commands
+- Tilde (~) key opens console at all screens
+- `continue` — custom command to load saved game
+- `newgame` — custom command to start new game
+- `open [mapname]` — load a map directly
 
 ## NVGT Language Notes (from audio moba project)
 This project uses Python, not NVGT. But the audio moba project is at `C:\Users\16239\Documents\audio moba\` for reference.
