@@ -1,25 +1,18 @@
 """
-Startup Helper - Gets blind players through BL2 startup and into the game.
+Startup Helper - Gets blind players through BL2 startup.
 
-Strategy: Use console commands to bypass Scaleform menus entirely.
-BL2's Scaleform menus are mouse-driven Flash and don't respond to keyboard
-navigation. Instead of trying to make them accessible, we provide direct
-keyboard shortcuts that invoke the game functions via console commands.
+APPROACH: Hook specific functions that fire when screens actually become active.
+find_all() returns ALL pre-created movie instances, so polling doesn't work.
+Instead we hook into the actual Show/Start/Open methods on specific movies.
 """
 
 import unrealsdk
 from unrealsdk import hooks, logging as sdk_logging
 from unrealsdk.unreal import UObject, WrappedStruct, BoundFunction
-import threading
-import time
 
 from . import tts
 
 _announced = set()
-_polling_active = False
-_poll_thread = None
-_press_start_dismissed = False
-_at_main_menu = False
 
 
 def _announce_once(key: str, text: str, interrupt: bool = True):
@@ -27,199 +20,220 @@ def _announce_once(key: str, text: str, interrupt: bool = True):
     if key not in _announced:
         _announced.add(key)
         tts.speak(text, interrupt)
-        sdk_logging.info(f"[BL2A11y Startup] Announced: {key}")
-
-
-def _get_pc():
-    """Get player controller."""
-    try:
-        engine = unrealsdk.find_object("WillowGameEngine", "Transient.WillowGameEngine_0")
-        if engine is not None:
-            return engine.GamePlayers[0].Actor
-    except Exception:
-        pass
-    try:
-        for pc in unrealsdk.find_all("WillowPlayerController", exact=False):
-            return pc
-    except Exception:
-        pass
-    return None
-
-
-def _console_cmd(cmd: str):
-    """Execute a console command."""
-    try:
-        pc = _get_pc()
-        if pc is not None:
-            pc.ConsoleCommand(cmd)
-            return True
-    except Exception:
-        pass
-    return False
+        sdk_logging.info(f"[BL2A11y] Announced: {key}")
 
 
 # =============================================================================
-# POLLING THREAD
+# SPLASH / INTRO MOVIES
 # =============================================================================
 
-def _poll_for_screens():
-    """Background thread that detects screens and auto-handles startup."""
-    global _polling_active, _press_start_dismissed, _at_main_menu
-    sdk_logging.info("[BL2A11y Startup] Polling thread started")
+def _on_start_intro_movies(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
+    """Startup movies (logos) beginning to play."""
+    sdk_logging.info("[BL2A11y] Intro movies starting")
+    tts.speak("Loading Borderlands 2.", True)
 
-    while _polling_active:
-        time.sleep(1.0)
+
+# =============================================================================
+# PRESS START SCREEN
+# =============================================================================
+
+def _on_press_start_show(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
+    """WillowGFxMoviePressStart is now visible."""
+    sdk_logging.info("[BL2A11y] PressStart shown")
+    _announce_once("press_start", "Press any key to start.", True)
+
+
+# =============================================================================
+# EULA
+# =============================================================================
+
+def _on_eula_show(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
+    """EULA screen shown — auto-accept it."""
+    sdk_logging.info("[BL2A11y] EULA shown")
+    tts.speak("License agreement. Accepting.", True)
+    try:
+        obj.Accept()
+    except Exception:
         try:
-            active_movies = {}
+            obj.OnAccept()
+        except Exception:
             try:
-                for movie in unrealsdk.find_all("GFxMoviePlayer", exact=False):
-                    if movie is None:
-                        continue
-                    try:
-                        cls = str(movie.Class.Name)
-                        if "weaponscope" in cls.lower():
-                            continue
-                        active_movies[cls] = movie
-                    except Exception:
-                        continue
-            except Exception as e:
-                sdk_logging.error(f"[BL2A11y Poll] find_all error: {e}")
-                continue
-
-            movie_names = set(k.lower() for k in active_movies.keys())
-            sdk_logging.info(f"[BL2A11y Poll] Active: {list(active_movies.keys())}")
-
-            # === PRESS START SCREEN ===
-            if "willowgfxmoviepressstart" in movie_names:
-                if not _press_start_dismissed:
-                    _announce_once("press_start", "Press any key to start.", True)
-                continue  # Don't process other movies while press-start is up
-
-            # === ONLINE MESSAGE (Shift popup) - appears AFTER pressing start ===
-            if "onlinemessagegfxmovie" in movie_names and "frontendgfxmovie" not in movie_names:
-                # This is the Shift account popup before main menu
-                _announce_once("online_msg", "Online account popup. Skipping automatically.", True)
-                movie = active_movies.get("OnlineMessageGFxMovie")
-                if movie is not None:
-                    # Try every dismiss method aggressively
-                    for method in ['Close', 'Accept', 'OnAccept', 'AcceptClicked',
-                                   'OKClicked', 'Dismiss', 'OnClose', 'Skip',
-                                   'OnSkip', 'Cancel', 'OnCancel']:
-                        try:
-                            getattr(movie, method)()
-                            sdk_logging.info(f"[BL2A11y] OnlineMessage: {method} called")
-                        except Exception:
-                            pass
-                    # Also try clicking via console command
-                    _console_cmd("disconnect")  # This can force past stuck screens
-                continue
-
-            # === MAIN MENU ===
-            if "frontendgfxmovie" in movie_names:
-                # Dismiss any overlays first
-                if "onlinemessagegfxmovie" in movie_names:
-                    movie = active_movies.get("OnlineMessageGFxMovie")
-                    if movie is not None:
-                        try:
-                            movie.Close()
-                        except Exception:
-                            pass
-                if "upsellnotificationgfxmovie" in movie_names:
-                    movie = active_movies.get("UpsellNotificationGFxMovie")
-                    if movie is not None:
-                        try:
-                            movie.Close()
-                        except Exception:
-                            pass
-
-                if not _at_main_menu:
-                    _at_main_menu = True
-                    _announce_once("main_menu",
-                        "Main menu. Press F7 to continue your game. "
-                        "Press F8 to start a new game. "
-                        "Press escape for options.", True)
-                continue
-
-            # === LOADING (no movies active) ===
-            if len(active_movies) == 0:
-                _announce_once("loading_screen", "Loading.", True)
-
-        except Exception as e:
-            sdk_logging.error(f"[BL2A11y Poll] Error: {e}")
-
-    sdk_logging.info("[BL2A11y Startup] Polling thread stopped")
+                obj.Close()
+            except Exception:
+                pass
 
 
 # =============================================================================
-# HOOK-BASED DETECTION
+# ONLINE MESSAGE (Shift account popup)
 # =============================================================================
 
-def _on_frontend_start(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
-    """Main menu movie started."""
-    global _at_main_menu
-    _at_main_menu = True
+def _on_online_message_show(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
+    """OnlineMessageGFxMovie shown — the Shift account popup. Auto-dismiss."""
+    sdk_logging.info("[BL2A11y] OnlineMessage shown - dismissing")
+    tts.speak("Online account popup. Dismissing.", True)
+    # Try every possible way to close it
+    for method in ['Close', 'Accept', 'OnAccept', 'AcceptClicked', 'OKClicked',
+                   'Dismiss', 'OnClose', 'Cancel', 'OnCancel', 'Skip', 'OnSkip',
+                   'Acknowledged', 'OnAcknowledged', 'ExternalClose']:
+        try:
+            getattr(obj, method)()
+            sdk_logging.info(f"[BL2A11y] OnlineMessage dismissed via {method}")
+            return
+        except Exception:
+            continue
+
+
+# =============================================================================
+# UPSELL / DLC PROMO
+# =============================================================================
+
+def _on_upsell_show(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
+    """UpsellNotificationGFxMovie shown — auto-dismiss."""
+    sdk_logging.info("[BL2A11y] Upsell shown - dismissing")
+    tts.speak("Promotional popup. Dismissing.", True)
+    try:
+        obj.Close()
+    except Exception:
+        pass
+
+
+# =============================================================================
+# MAIN MENU (Frontend)
+# =============================================================================
+
+def _on_frontend_show(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
+    """FrontendGFxMovie shown — the main menu."""
+    sdk_logging.info("[BL2A11y] Frontend/main menu shown")
+    _announced.discard("main_menu")
     _announce_once("main_menu",
         "Main menu. Press F7 to continue your game. "
         "Press F8 to start a new game. "
         "Press escape for options.", True)
 
 
+# =============================================================================
+# DIALOG BOXES
+# =============================================================================
+
+def _on_dialog_show(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
+    """Any WillowGFxDialogBox shown."""
+    sdk_logging.info(f"[BL2A11y] Dialog box shown: {obj}")
+    # Try to read dialog text
+    text = ""
+    for attr in ['DialogText', 'MessageText', 'Body', 'Text', 'Description',
+                  'sDialog', 'sMessage', 'sBody', 'DialogBody', 'sText']:
+        try:
+            val = getattr(obj, attr, None)
+            if val is not None:
+                t = str(val).strip()
+                if t and len(t) > 2:
+                    text = t
+                    break
+        except Exception:
+            continue
+
+    if text:
+        tts.speak(f"Dialog. {text}. Accepting.", True)
+    else:
+        tts.speak("Dialog popup. Accepting.", True)
+
+    # Auto-accept
+    for method in ['Accept', 'OnAccept', 'AcceptClicked', 'OKClicked', 'Close']:
+        try:
+            getattr(obj, method)()
+            sdk_logging.info(f"[BL2A11y] Dialog accepted via {method}")
+            return
+        except Exception:
+            continue
+
+
+# =============================================================================
+# LOADING SCREENS
+# =============================================================================
+
+def _on_loading_start(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
+    """Loading movie shown."""
+    sdk_logging.info("[BL2A11y] Loading screen")
+    tts.speak("Loading.", True)
+
+
 def _on_loading_complete(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
-    """Map loaded."""
+    """World loaded."""
+    sdk_logging.info("[BL2A11y] World loaded")
     _announced.discard("main_menu")
-    _announced.discard("loading_screen")
-    global _at_main_menu
-    _at_main_menu = False
     tts.speak("Loading complete.", True)
 
 
-def _on_loading_movie(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
-    """Loading movie shown."""
-    tts.speak("Loading.", True)
-
-
 def _on_map_change(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
-    """Map transition starting."""
+    """Map transition."""
+    sdk_logging.info("[BL2A11y] Map change")
     tts.speak("Loading.", True)
+
+
+# =============================================================================
+# PAUSE MENU
+# =============================================================================
+
+def _on_pause_show(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
+    """Pause menu shown."""
+    tts.speak("Pause menu.", True)
 
 
 # =============================================================================
 # HOOK REGISTRATION
+# All hooks use the :Start method which fires when a movie ACTUALLY opens.
 # =============================================================================
+
+_HOOKS = [
+    # (unreal_function, hook_type, identifier, callback)
+
+    # Press start screen
+    ("WillowGame.WillowGFxMoviePressStart:Start", hooks.Type.POST, "bl2a11y_pressstart", _on_press_start_show),
+
+    # EULA
+    ("WillowGame.GearboxEULAGFxMovie:Start", hooks.Type.POST, "bl2a11y_eula", _on_eula_show),
+
+    # Online message (Shift popup)
+    ("WillowGame.OnlineMessageGFxMovie:Start", hooks.Type.POST, "bl2a11y_online_msg", _on_online_message_show),
+
+    # Upsell
+    ("WillowGame.UpsellNotificationGFxMovie:Start", hooks.Type.POST, "bl2a11y_upsell", _on_upsell_show),
+
+    # Main menu
+    ("WillowGame.FrontendGFxMovie:Start", hooks.Type.POST, "bl2a11y_frontend", _on_frontend_show),
+
+    # Dialog boxes
+    ("WillowGame.WillowGFxDialogBox:Start", hooks.Type.POST, "bl2a11y_dialog", _on_dialog_show),
+    ("WillowGame.WillowGFxTrainingDialogBox:Start", hooks.Type.POST, "bl2a11y_training_dialog", _on_dialog_show),
+
+    # Loading
+    ("WillowGame.WillowPlayerController:WillowClientShowLoadingMovie", hooks.Type.POST, "bl2a11y_loading", _on_loading_start),
+    ("Engine.PlayerController:NotifyLoadedWorld", hooks.Type.POST, "bl2a11y_loaded", _on_loading_complete),
+    ("Engine.WorldInfo:PreCommitMapChange", hooks.Type.PRE, "bl2a11y_mapchange", _on_map_change),
+
+    # Pause
+    ("WillowGame.PauseGFxMovie:Start", hooks.Type.POST, "bl2a11y_pause", _on_pause_show),
+
+    # Intro movies
+    ("Engine.GameViewportClient:ShowFullScreenMovie", hooks.Type.POST, "bl2a11y_fullscreen_movie", _on_start_intro_movies),
+]
+
 
 def register_hooks():
     """Register all startup helper hooks."""
-    global _polling_active, _poll_thread
-
-    hooks.add_hook(
-        "WillowGame.FrontendGFxMovie:Start",
-        hooks.Type.POST, "bl2a11y_frontend_start2", _on_frontend_start
-    )
-    hooks.add_hook(
-        "Engine.PlayerController:NotifyLoadedWorld",
-        hooks.Type.POST, "bl2a11y_loaded2", _on_loading_complete
-    )
-    hooks.add_hook(
-        "WillowGame.WillowPlayerController:WillowClientShowLoadingMovie",
-        hooks.Type.POST, "bl2a11y_loading_movie", _on_loading_movie
-    )
-    hooks.add_hook(
-        "Engine.WorldInfo:PreCommitMapChange",
-        hooks.Type.PRE, "bl2a11y_map_change", _on_map_change
-    )
-
-    # Start polling thread
-    _polling_active = True
-    _poll_thread = threading.Thread(target=_poll_for_screens, daemon=True, name="BL2A11y-Poll")
-    _poll_thread.start()
-    sdk_logging.info("[BL2A11y Startup] Hooks registered + polling started")
+    for func_name, hook_type, identifier, callback in _HOOKS:
+        try:
+            hooks.add_hook(func_name, hook_type, identifier, callback)
+            sdk_logging.info(f"[BL2A11y] Hook registered: {func_name}")
+        except Exception as e:
+            sdk_logging.error(f"[BL2A11y] Failed to hook {func_name}: {e}")
+    sdk_logging.info("[BL2A11y Startup] All hooks registered")
 
 
 def unregister_hooks():
     """Remove all startup helper hooks."""
-    global _polling_active
-    _polling_active = False
-    hooks.remove_hook("WillowGame.FrontendGFxMovie:Start", hooks.Type.POST, "bl2a11y_frontend_start2")
-    hooks.remove_hook("Engine.PlayerController:NotifyLoadedWorld", hooks.Type.POST, "bl2a11y_loaded2")
-    hooks.remove_hook("WillowGame.WillowPlayerController:WillowClientShowLoadingMovie", hooks.Type.POST, "bl2a11y_loading_movie")
-    hooks.remove_hook("Engine.WorldInfo:PreCommitMapChange", hooks.Type.PRE, "bl2a11y_map_change")
+    for func_name, hook_type, identifier, callback in _HOOKS:
+        try:
+            hooks.remove_hook(func_name, hook_type, identifier)
+        except Exception:
+            pass
