@@ -161,7 +161,7 @@ def _on_frontend_show(obj: UObject, args: WrappedStruct, ret, func: BoundFunctio
         _mark_shift_done()
 
     tts.speak(
-        "Main menu. Use up and down arrow keys or W and S to navigate. Press enter to select.",
+        "Main menu. Use W and S to navigate. Press enter to select.",
         True
     )
 
@@ -304,10 +304,22 @@ def _menu_keyboard_thread():
     VK_DOWN = 0x28
     VK_RETURN = 0x0D
     VK_ESCAPE = 0x1B
-
-    # Also try W/S as alternative nav keys in case arrows are consumed
     VK_W = 0x57
     VK_S = 0x53
+
+    # Also set up GetKeyboardState for arrow keys (Scaleform eats them from GetAsyncKeyState)
+    keyboard_state = (ctypes.c_ubyte * 256)()
+
+    def _is_key_down(vk):
+        """Check if key is down using both methods."""
+        # Method 1: GetAsyncKeyState
+        if user32.GetAsyncKeyState(vk) & 0x8000:
+            return True
+        # Method 2: GetKeyboardState (catches keys Scaleform consumed)
+        user32.GetKeyboardState(keyboard_state)
+        if keyboard_state[vk] & 0x80:
+            return True
+        return False
 
     sdk_logging.info("[BL2A11y] Menu keyboard thread started")
 
@@ -323,26 +335,15 @@ def _menu_keyboard_thread():
     while _at_main_menu and not _game_loaded:
         time.sleep(0.05)  # 50ms poll = responsive
         try:
-            # GetAsyncKeyState returns short — bit 15 = currently down
-            raw_up = user32.GetAsyncKeyState(VK_UP)
-            raw_down = user32.GetAsyncKeyState(VK_DOWN)
-            raw_enter = user32.GetAsyncKeyState(VK_RETURN)
-            raw_w = user32.GetAsyncKeyState(VK_W)
-            raw_s = user32.GetAsyncKeyState(VK_S)
-            up_pressed = bool(raw_up & 0x8000) or bool(raw_w & 0x8000)
-            down_pressed = bool(raw_down & 0x8000) or bool(raw_s & 0x8000)
-            enter_pressed = bool(raw_enter & 0x8000)
-
-            # Log occasionally to verify the thread is running
-            log_counter += 1
-            if log_counter % 200 == 0:  # Every 10 seconds
-                sdk_logging.info(f"[BL2A11y] Keyboard poll alive. up={raw_up} down={raw_down} enter={raw_enter}")
+            up_pressed = _is_key_down(VK_UP) or _is_key_down(VK_W)
+            down_pressed = _is_key_down(VK_DOWN) or _is_key_down(VK_S)
+            enter_pressed = _is_key_down(VK_RETURN)
 
             # Log any key press
             if up_pressed and not last_up:
-                sdk_logging.info("[BL2A11y] UP arrow detected")
+                sdk_logging.info("[BL2A11y] UP detected")
             if down_pressed and not last_down:
-                sdk_logging.info("[BL2A11y] DOWN arrow detected")
+                sdk_logging.info("[BL2A11y] DOWN detected")
             if enter_pressed and not last_enter:
                 sdk_logging.info("[BL2A11y] ENTER detected")
 
