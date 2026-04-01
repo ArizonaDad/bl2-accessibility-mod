@@ -132,89 +132,113 @@ def _on_frontend_show(obj: UObject, args: WrappedStruct, ret, func: BoundFunctio
     if not _is_shift_setup_done():
         _mark_shift_done()
 
-    tts.speak("Main menu. Loading your saved game in 5 seconds.", True)
+    tts.speak(
+        "Main menu. Use up and down arrow keys to navigate. Press enter to select. "
+        "Items are: Continue, New Game, Downloadable Content, Mods, Options, Quit.",
+        True
+    )
 
-    def _auto_continue():
-        time.sleep(5.0)
-        if not _at_main_menu or _game_loaded:
-            return
-        sdk_logging.info("[BL2A11y] Auto-continuing...")
-        tts.speak("Loading saved game.", True)
+    # Try to read the actual menu items by probing the movie's Flash variables
+    def _probe_menu():
+        time.sleep(1.0)
         try:
-            for movie in unrealsdk.find_all("FrontendGFxMovie", exact=False):
-                if movie is None:
-                    continue
+            # Try to read menu state via GetVariable on the Flash movie
+            for attr in ['GetVariableString', 'GetVariable', 'GetVariableObject']:
                 try:
-                    movie.LaunchSaveGame(0)
-                    sdk_logging.info("[BL2A11y] LaunchSaveGame(0) called")
-                    return
-                except Exception as e:
-                    sdk_logging.info(f"[BL2A11y] LaunchSaveGame(0): {e}")
-                try:
-                    movie.OpenCharacterSelect()
-                    sdk_logging.info("[BL2A11y] OpenCharacterSelect called")
-                    tts.speak("Character selection.", True)
-                    return
-                except Exception as e:
-                    sdk_logging.info(f"[BL2A11y] OpenCharacterSelect: {e}")
+                    fn = getattr(obj, attr, None)
+                    if fn is not None:
+                        # Common Flash paths for menu items
+                        for path in ['_root.MenuList.selectedIndex',
+                                     '_root.MenuPanel.selectedIndex',
+                                     'MenuList.selectedIndex',
+                                     'selectedIndex']:
+                            try:
+                                val = fn(path)
+                                sdk_logging.info(f"[BL2A11y] Flash {attr}({path}) = {val}")
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+
+            # Log all properties we can find on the movie for debugging
+            try:
+                for prop in ['TheList', 'FrontendMenu', 'CurrentSelectedDifficulty']:
+                    try:
+                        val = getattr(obj, prop, None)
+                        if val is not None:
+                            sdk_logging.info(f"[BL2A11y] Frontend.{prop} = {val} (type: {type(val).__name__})")
+                    except Exception as e:
+                        sdk_logging.info(f"[BL2A11y] Frontend.{prop}: {e}")
+            except Exception:
+                pass
         except Exception as e:
-            sdk_logging.error(f"[BL2A11y] Auto-continue failed: {e}")
-    threading.Thread(target=_auto_continue, daemon=True).start()
+            sdk_logging.error(f"[BL2A11y] Menu probe error: {e}")
+    threading.Thread(target=_probe_menu, daemon=True).start()
+
+    # Start polling for menu selection changes
+    threading.Thread(target=_poll_menu_selection, daemon=True).start()
 
 
 # =============================================================================
 # MAIN MENU ITEM READING — hook into scrolling list focus changes
 # =============================================================================
 
-def _on_scrolling_list_focus(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
-    """Called when focus changes in a scrolling list (menu navigation)."""
-    try:
-        # Try to get the focused item index and text
-        idx = -1
-        for attr in ['Index', 'ItemIndex', 'SelectedIndex', 'FocusIndex']:
-            try:
-                val = getattr(args, attr, None)
-                if val is not None:
-                    idx = int(val)
-                    break
-            except Exception:
-                continue
+_last_menu_index = -1
 
-        sdk_logging.info(f"[BL2A11y] ScrollingList focus: idx={idx}")
+def _poll_menu_selection():
+    """Periodically check the menu's selected index and read it aloud when it changes."""
+    global _last_menu_index
+    main_menu_items = [
+        "Continue",
+        "New Game",
+        "Downloadable Content",
+        "Mods",
+        "Options",
+        "Quit",
+    ]
 
-        # Main menu items (known order for BL2)
-        main_menu_items = [
-            "Continue",
-            "New Game",
-            "Downloadable Content",
-            "Mods",
-            "Options",
-            "Quit",
-        ]
+    while _at_main_menu and not _game_loaded:
+        time.sleep(0.3)
+        try:
+            for movie in unrealsdk.find_all("FrontendGFxMovie", exact=False):
+                if movie is None:
+                    continue
+                # Try reading the selected index from Flash
+                idx = -1
+                for method_name in ['GetVariableNumber']:
+                    try:
+                        fn = getattr(movie, method_name, None)
+                        if fn is None:
+                            continue
+                        for path in ['_root.FrontendMenu.TheList.selectedIndex',
+                                     'FrontendMenu.TheList.selectedIndex',
+                                     'TheList.selectedIndex',
+                                     '_root.TheList.selectedIndex',
+                                     'selectedIndex']:
+                            try:
+                                val = fn(path)
+                                if val is not None:
+                                    idx = int(val)
+                                    if idx >= 0:
+                                        sdk_logging.info(f"[BL2A11y] Menu poll: {path} = {idx}")
+                                        break
+                            except Exception:
+                                continue
+                        if idx >= 0:
+                            break
+                    except Exception:
+                        continue
 
-        if 0 <= idx < len(main_menu_items):
-            tts.speak(main_menu_items[idx], True)
-        elif idx >= 0:
-            tts.speak(f"Item {idx + 1}", True)
-    except Exception as e:
-        sdk_logging.info(f"[BL2A11y] ScrollingList focus error: {e}")
-
-
-def _on_menu_item_click(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
-    """Called when a menu item is clicked/selected."""
-    try:
-        idx = -1
-        for attr in ['Index', 'ItemIndex', 'SelectedIndex']:
-            try:
-                val = getattr(args, attr, None)
-                if val is not None:
-                    idx = int(val)
-                    break
-            except Exception:
-                continue
-        sdk_logging.info(f"[BL2A11y] Menu item clicked: idx={idx}")
-    except Exception:
-        pass
+                if idx >= 0 and idx != _last_menu_index:
+                    _last_menu_index = idx
+                    if idx < len(main_menu_items):
+                        tts.speak(main_menu_items[idx], True)
+                    else:
+                        tts.speak(f"Item {idx + 1}", True)
+                break  # Only check first frontend movie
+        except Exception:
+            pass
+    sdk_logging.info("[BL2A11y] Menu poll thread ended")
 
 
 # =============================================================================
@@ -333,9 +357,7 @@ _HOOKS = [
     ("Engine.WorldInfo:PreCommitMapChange", hooks.Type.PRE, "bl2a11y_mapchange", _on_map_change),
     ("WillowGame.PauseGFxMovie:Start", hooks.Type.POST, "bl2a11y_pause", _on_pause_show),
     ("Engine.GameViewportClient:ShowFullScreenMovie", hooks.Type.POST, "bl2a11y_fullscreen", _on_fullscreen_movie),
-    # Menu navigation — read focused item
-    ("WillowGame.FrontendGFxMovie:OnScrollingListItemFocus", hooks.Type.POST, "bl2a11y_menu_focus", _on_scrolling_list_focus),
-    ("WillowGame.FrontendGFxMovie:extGenericButtonClicked", hooks.Type.POST, "bl2a11y_menu_click", _on_menu_item_click),
+    # Menu item reading now done via polling thread (GetVariableNumber on Flash movie)
 ]
 
 
