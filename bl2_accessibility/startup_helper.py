@@ -162,7 +162,7 @@ def _on_frontend_show(obj: UObject, args: WrappedStruct, ret, func: BoundFunctio
         _mark_shift_done()
 
     tts.speak(
-        "Main menu. Use W and S to navigate. Press enter to select.",
+        "Main menu. W and S to navigate. Enter to select.",
         True
     )
 
@@ -283,38 +283,83 @@ def _execute_pending_action():
             sdk_logging.error("[BL2A11y] No FrontendGFxMovie found")
             return
 
+        # First set the Flash selection index so the movie's internal state matches
+        try:
+            movie.SetVariableNumber("_root.FrontendMenu.TheList.selectedIndex", float(idx))
+            sdk_logging.info(f"[BL2A11y] Set Flash index to {idx}")
+        except Exception as e:
+            sdk_logging.info(f"[BL2A11y] SetVariableNumber: {e}")
+
+        # Try to simulate the click via ActionScript invoke
+        try:
+            movie.ActionScriptVoid("_root.FrontendMenu.TheList.onItemClick")
+            sdk_logging.info("[BL2A11y] ActionScriptVoid onItemClick called")
+        except Exception as e:
+            sdk_logging.info(f"[BL2A11y] onItemClick: {e}")
+
+        # Try extGenericButtonClicked
+        try:
+            movie.extGenericButtonClicked(idx, 0)
+            sdk_logging.info(f"[BL2A11y] extGenericButtonClicked({idx}, 0) called")
+        except Exception as e:
+            sdk_logging.info(f"[BL2A11y] extGenericButtonClicked: {e}")
+
+        # Try the scrolling list's SelectItem
+        try:
+            the_list = movie.TheList
+            if the_list is not None:
+                try:
+                    the_list.OnItemClick(idx)
+                    sdk_logging.info(f"[BL2A11y] TheList.OnItemClick({idx})")
+                except Exception as e:
+                    sdk_logging.info(f"[BL2A11y] TheList.OnItemClick: {e}")
+                try:
+                    the_list.OnClikItemClick(idx, 0)
+                    sdk_logging.info(f"[BL2A11y] TheList.OnClikItemClick({idx})")
+                except Exception as e:
+                    sdk_logging.info(f"[BL2A11y] TheList.OnClikItemClick: {e}")
+        except Exception as e:
+            sdk_logging.info(f"[BL2A11y] TheList access: {e}")
+
+        # Also try direct method calls as fallback
         if idx == 0:
             try:
                 movie.LaunchSaveGame(0)
-                sdk_logging.info("[BL2A11y] LaunchSaveGame(0) called on main thread")
+                sdk_logging.info("[BL2A11y] LaunchSaveGame(0)")
             except Exception as e:
                 sdk_logging.info(f"[BL2A11y] LaunchSaveGame: {e}")
-                try:
-                    movie.OpenCharacterSelect()
-                except Exception:
-                    pass
         elif idx == 1:
             try:
                 movie.LaunchNewGame()
-                sdk_logging.info("[BL2A11y] LaunchNewGame called on main thread")
+                sdk_logging.info("[BL2A11y] LaunchNewGame()")
             except Exception as e:
                 sdk_logging.info(f"[BL2A11y] LaunchNewGame: {e}")
-                try:
-                    movie.OpenCharacterSelect()
-                except Exception:
-                    pass
+            try:
+                movie.OpenCharacterSelect()
+                sdk_logging.info("[BL2A11y] OpenCharacterSelect()")
+            except Exception as e:
+                sdk_logging.info(f"[BL2A11y] OpenCharacterSelect: {e}")
         elif idx == 4:
             try:
                 movie.ShowOptions()
-                sdk_logging.info("[BL2A11y] ShowOptions called on main thread")
+                sdk_logging.info("[BL2A11y] ShowOptions()")
             except Exception as e:
                 sdk_logging.info(f"[BL2A11y] ShowOptions: {e}")
         elif idx == 5:
             try:
                 movie.ConfirmQuit_Clicked()
-                sdk_logging.info("[BL2A11y] ConfirmQuit called on main thread")
+                sdk_logging.info("[BL2A11y] ConfirmQuit()")
             except Exception as e:
                 sdk_logging.info(f"[BL2A11y] ConfirmQuit: {e}")
+
+        # Log TheList methods for debugging
+        try:
+            the_list = movie.TheList
+            if the_list is not None:
+                methods = [m for m in dir(the_list) if 'click' in m.lower() or 'select' in m.lower() or 'item' in m.lower() or 'scroll' in m.lower()]
+                sdk_logging.info(f"[BL2A11y] TheList methods: {methods}")
+        except Exception:
+            pass
     except Exception as e:
         sdk_logging.error(f"[BL2A11y] Execute action error: {e}")
 
@@ -363,7 +408,7 @@ def _menu_keyboard_thread():
 
     # Announce initial selection
     time.sleep(0.5)
-    tts.speak("Continue. Use up and down arrows to navigate. Enter to select.", True)
+    tts.speak("Continue. W and S to navigate. Enter to select.", True)
 
     last_up = False
     last_down = False
