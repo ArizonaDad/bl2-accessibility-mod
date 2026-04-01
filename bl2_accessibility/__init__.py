@@ -117,6 +117,29 @@ def read_skills_key() -> None:
     tts.speak(text, True)
 
 
+@keybind("Continue Game", key="F7", event_filter=EInputEvent.IE_Pressed)
+def continue_game_key() -> None:
+    """Quick-continue: load most recent save from main menu."""
+    try:
+        pc = hud_reader.get_player_controller()
+        if pc is not None:
+            pc.ConsoleCommand("open menudefaultmap")
+        # Also try to invoke Continue on the frontend movie
+        for movie in __import__('unrealsdk').find_all("FrontendGFxMovie", exact=False):
+            if movie is not None:
+                try:
+                    movie.ContinueGame()
+                except Exception:
+                    pass
+                try:
+                    movie.OnContinue()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    tts.speak("Loading game.", True)
+
+
 @keybind("Stop Speech", key="F12", event_filter=EInputEvent.IE_Pressed)
 def stop_speech_key() -> None:
     """Stop all current TTS speech."""

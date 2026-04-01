@@ -112,6 +112,37 @@ def _poll_for_screens():
     sdk_logging.info("[BL2A11y Startup] Polling thread stopped")
 
 
+def _read_frontend_menu(movie) -> str:
+    """Try to read actual menu item labels from the frontend GFx movie."""
+    items = []
+    try:
+        # Try common Scaleform menu properties
+        for attr in ['MenuItems', 'Items', 'ButtonList', 'Buttons', 'MenuOptions']:
+            try:
+                arr = getattr(movie, attr, None)
+                if arr is not None:
+                    for item in arr:
+                        if item is not None:
+                            for text_attr in ['Label', 'Text', 'Caption', 'Name', 'ButtonText']:
+                                try:
+                                    t = str(getattr(item, text_attr, "")).strip()
+                                    if t and len(t) > 1:
+                                        items.append(t)
+                                        break
+                                except Exception:
+                                    continue
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    if items:
+        return ", ".join(items)
+
+    # Fallback: known BL2 main menu order
+    return "Continue, New Game, Downloadable Content, Mods, Options, Quit"
+
+
 def _try_close_movie(movie):
     """Attempt to programmatically close/dismiss a GFx movie."""
     # Try every known close method
@@ -149,7 +180,21 @@ def _identify_and_announce(cls, name, lower_cls, lower_name, movie):
     # Main menu / Frontend — only announce when PressStart is gone
     if "frontend" in lower_cls:
         if not _press_start_active:
-            _announce_once("main_menu", "Main menu. Continue, New game, Downloadable content, Mods, Options, Quit. Use up and down arrows. Press enter to select.", True)
+            # Try to read actual menu items from the movie
+            menu_text = _read_frontend_menu(movie)
+            if menu_text:
+                _announce_once("main_menu", f"Main menu. {menu_text}. Use up and down arrows. Press enter to select.", True)
+            else:
+                _announce_once("main_menu", "Main menu. Use up and down arrows. Press enter to select.", True)
+            # Ensure the menu can receive keyboard input
+            try:
+                movie.SetFocus(True)
+            except Exception:
+                pass
+            try:
+                movie.GrabFocus()
+            except Exception:
+                pass
         return
 
     # Press Start screen
