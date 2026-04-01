@@ -501,10 +501,9 @@ def _on_loading_movie(obj: UObject, args: WrappedStruct, ret, func: BoundFunctio
 
 
 def _on_loading_complete(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
-    global _at_main_menu, _game_loaded, _in_cinematic
+    global _at_main_menu, _game_loaded
     _at_main_menu = False
     _game_loaded = True
-    _in_cinematic = False
     _announced.discard("main_menu")
     _announced.discard("press_start")
     tts.speak(
@@ -527,74 +526,8 @@ def _on_pause_show(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
     tts.speak("Pause menu.", True)
 
 
-_in_cinematic = False
-
 def _on_fullscreen_movie(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
-    global _in_cinematic
-    if _at_main_menu or _game_loaded:
-        # This is a cinematic, not splash screen
-        _in_cinematic = True
-        tts.speak("Cinematic playing. Press enter to skip.", True)
-        sdk_logging.info("[BL2A11y] Cinematic started")
-        # Start a thread to listen for skip key
-        threading.Thread(target=_cinematic_skip_listener, daemon=True).start()
-    else:
-        _announce_once("splash", "Loading Borderlands 2.", True)
-
-
-def _cinematic_skip_listener():
-    """Listen for Enter/Escape to skip cinematic."""
-    global _in_cinematic
-    import ctypes
-    import ctypes.wintypes
-    user32 = ctypes.windll.user32
-    user32.GetAsyncKeyState.restype = ctypes.wintypes.SHORT
-    user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
-    VK_RETURN = 0x0D
-    VK_ESCAPE = 0x1B
-    VK_SPACE = 0x20
-
-    last_enter = False
-    last_escape = False
-    last_space = False
-
-    while _in_cinematic:
-        time.sleep(0.05)
-        try:
-            enter = bool(user32.GetAsyncKeyState(VK_RETURN) & 0x8000)
-            escape = bool(user32.GetAsyncKeyState(VK_ESCAPE) & 0x8000)
-            space = bool(user32.GetAsyncKeyState(VK_SPACE) & 0x8000)
-
-            if (enter and not last_enter) or (escape and not last_escape) or (space and not last_space):
-                sdk_logging.info("[BL2A11y] Skipping cinematic")
-                tts.speak("Skipping.", True)
-                _in_cinematic = False
-                # Try to skip the movie
-                try:
-                    for pc in unrealsdk.find_all("WillowPlayerController", exact=False):
-                        if pc is not None:
-                            pc.ConsoleCommand("SkipIntroMovies")
-                            break
-                except Exception:
-                    pass
-                try:
-                    for gvc in unrealsdk.find_all("GameViewportClient", exact=False):
-                        if gvc is not None:
-                            try:
-                                gvc.HideFullScreenMovie()
-                            except Exception:
-                                pass
-                            break
-                except Exception:
-                    pass
-                break
-
-            last_enter = enter
-            last_escape = escape
-            last_space = space
-        except Exception:
-            break
-    sdk_logging.info("[BL2A11y] Cinematic skip listener ended")
+    _announce_once("splash", "Loading Borderlands 2.", True)
 
 
 # =============================================================================
