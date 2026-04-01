@@ -123,27 +123,58 @@ def _on_frontend_show(obj: UObject, args: WrappedStruct, ret, func: BoundFunctio
             for movie in unrealsdk.find_all("FrontendGFxMovie", exact=False):
                 if movie is None:
                     continue
+
+                # LaunchSaveGame needs PlayThrough index (0 = Normal, 1 = TVHM, 2 = UVHM)
                 try:
-                    movie.ConditionalLoadGame()
-                    sdk_logging.info("[BL2A11y] Continue via ConditionalLoadGame")
+                    movie.LaunchSaveGame(0)
+                    sdk_logging.info("[BL2A11y] Continue via LaunchSaveGame(0)")
                     return
                 except Exception as e:
-                    sdk_logging.info(f"[BL2A11y] ConditionalLoadGame: {e}")
-                try:
-                    movie.LaunchSaveGame()
-                    sdk_logging.info("[BL2A11y] Continue via LaunchSaveGame")
-                    return
-                except Exception as e:
-                    sdk_logging.info(f"[BL2A11y] LaunchSaveGame: {e}")
+                    sdk_logging.info(f"[BL2A11y] LaunchSaveGame(0): {e}")
+
+                # Try with different playthrough values
+                for pt in [1, 2]:
+                    try:
+                        movie.LaunchSaveGame(pt)
+                        sdk_logging.info(f"[BL2A11y] Continue via LaunchSaveGame({pt})")
+                        return
+                    except Exception as e:
+                        sdk_logging.info(f"[BL2A11y] LaunchSaveGame({pt}): {e}")
+
+                # LaunchNewGame - try with no args and with args
                 try:
                     movie.LaunchNewGame()
-                    sdk_logging.info("[BL2A11y] Fallback: LaunchNewGame")
+                    sdk_logging.info("[BL2A11y] LaunchNewGame() called")
+                except Exception as e:
+                    sdk_logging.info(f"[BL2A11y] LaunchNewGame(): {e}")
+
+                # Try to find the character class and pass it
+                try:
+                    movie.OpenCharacterSelect()
+                    sdk_logging.info("[BL2A11y] OpenCharacterSelect() called")
+                    tts.speak("Character select screen.", True)
                     return
                 except Exception as e:
-                    sdk_logging.info(f"[BL2A11y] LaunchNewGame: {e}")
+                    sdk_logging.info(f"[BL2A11y] OpenCharacterSelect: {e}")
+
+                # Last resort: try ActionScript invoke
+                try:
+                    movie.Invoke("LaunchSaveGame", unrealsdk.make_struct("Core.Object.Array_Mirror"))
+                    sdk_logging.info("[BL2A11y] Invoke LaunchSaveGame")
+                except Exception as e:
+                    sdk_logging.info(f"[BL2A11y] Invoke failed: {e}")
+
+                # Log what methods look like they could work
+                try:
+                    relevant = [m for m in dir(movie) if any(x in m.lower() for x in
+                        ['launch', 'load', 'save', 'continue', 'start', 'play', 'character', 'new'])]
+                    sdk_logging.info(f"[BL2A11y] Relevant methods: {relevant}")
+                except Exception:
+                    pass
+
         except Exception as e:
             sdk_logging.error(f"[BL2A11y] Auto-continue failed: {e}")
-        tts.speak("Could not auto-continue. Use tilde key to open console, then type continue.", True)
+        tts.speak("Could not auto-continue. Press tilde key, then type continue.", True)
     threading.Thread(target=_auto_continue, daemon=True).start()
 
 
