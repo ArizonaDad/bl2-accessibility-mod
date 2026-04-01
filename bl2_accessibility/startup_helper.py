@@ -1,20 +1,20 @@
 """
 Startup Helper - Gets blind players through BL2 startup.
 
-Known BL2 startup sequence (from logs):
-1. SDK loads ~20s after game launch (during splash/logo movies)
-2. Splash movies play (Gearbox/2K logos) — these ARE the "cutscene"
-3. WillowGFxMoviePressStart already exists (:Start fired before SDK loaded)
-4. User presses any key → press start screen dismisses
-5. OnlineMessageGFxMovie:Start — Shift account popup
-6. UpsellNotificationGFxMovie:Start — DLC promo
-7. FrontendGFxMovie:Start — Main menu
+FIRST LAUNCH: SHiFT account registration appears (OnlineMessageGFxMovie).
+This is a Scaleform Flash dialog that can't be dismissed programmatically.
+Close() returns success but the popup stays visually.
+A sighted person must click through it ONCE (username, confirm).
+After first launch, it never appears again.
 
-Key constraints:
-- PressStart:Start fires BEFORE SDK loads, so we can't hook it
-- Scaleform menus don't route keyboard through Unreal (no input hooks work)
-- Must use delayed detection for press-start screen
-- Auto-continue uses LaunchSaveGame(0) which works
+SUBSEQUENT LAUNCHES: OnlineMessage auto-dismissed, straight to main menu.
+
+Known startup sequence:
+1. Splash movies (~15s)
+2. Press any key screen (PressStart already exists before SDK)
+3. OnlineMessage — first launch: SHiFT registration. Later: auto-dismissed.
+4. UpsellNotification — auto-dismissed
+5. FrontendGFxMovie — Main menu (arrow keys work!)
 """
 
 import unrealsdk
@@ -22,78 +22,95 @@ from unrealsdk import hooks, logging as sdk_logging
 from unrealsdk.unreal import UObject, WrappedStruct, BoundFunction
 import threading
 import time
+import os
 
 from . import tts
 
 _announced = set()
 _at_main_menu = False
 _game_loaded = False
+_shift_done_file = os.path.join(os.path.dirname(__file__), ".shift_done")
 
 
 def _announce_once(key: str, text: str, interrupt: bool = True):
-    """Speak text only once per key."""
     if key not in _announced:
         _announced.add(key)
         tts.speak(text, interrupt)
         sdk_logging.info(f"[BL2A11y] Announced: {key}")
 
 
+def _is_shift_setup_done() -> bool:
+    """Check if SHiFT first-time setup has been completed."""
+    return os.path.exists(_shift_done_file)
+
+
+def _mark_shift_done():
+    """Mark SHiFT setup as completed so we auto-dismiss next time."""
+    try:
+        with open(_shift_done_file, "w") as f:
+            f.write("done")
+        sdk_logging.info("[BL2A11y] Marked SHiFT setup as done")
+    except Exception:
+        pass
+
+
 # =============================================================================
 # DELAYED PRESS-START DETECTION
-# Since PressStart:Start fires before SDK loads, we use a delayed thread
-# that waits for splash movies to finish then announces.
 # =============================================================================
 
 def _delayed_press_start_check():
-    """Wait for splash movies to end, then announce press-start screen."""
-    # Splash movies take ~15-20 seconds. SDK loads during them.
-    # Wait until they're likely done before announcing.
     time.sleep(12.0)
-    sdk_logging.info("[BL2A11y] Checking for press-start screen")
-
-    # Check if we're still at the press-start screen (no frontend yet)
     if "main_menu" not in _announced and not _at_main_menu:
         _announce_once("press_start", "Press any key to start.", True)
 
 
 # =============================================================================
-# ONLINE MESSAGE (Shift popup) — auto-dismiss + capture what was clicked
+# ONLINE MESSAGE (SHiFT popup)
 # =============================================================================
 
 def _on_online_message_show(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
-    """OnlineMessageGFxMovie shown — Shift account popup. Auto-dismiss."""
-    sdk_logging.info("[BL2A11y] OnlineMessage shown - dismissing")
-    tts.speak("Online popup. Dismissing.", True)
-    try:
-        obj.Close()
-        sdk_logging.info("[BL2A11y] OnlineMessage dismissed via Close")
-    except Exception as e:
-        sdk_logging.error(f"[BL2A11y] OnlineMessage Close failed: {e}")
+    sdk_logging.info("[BL2A11y] OnlineMessage shown")
+
+    if _is_shift_setup_done():
+        # Already done first-time setup — dismiss it
+        sdk_logging.info("[BL2A11y] SHiFT already done, dismissing")
+        tts.speak("Online popup. Dismissing.", True)
+        try:
+            obj.Close()
+        except Exception:
+            pass
+        _mark_shift_done()  # Re-mark in case file was deleted
+    else:
+        # First time — guide the user through it
+        tts.speak(
+            "Shift account registration screen. "
+            "This only appears once. "
+            "A sighted person needs to help click Continue, enter a username, and confirm. "
+            "After this is done once, it will be skipped automatically on future launches.",
+            True
+        )
 
 
 # =============================================================================
-# EULA — auto-accept
+# EULA
 # =============================================================================
 
 def _on_eula_show(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
-    """EULA shown — auto-accept."""
-    sdk_logging.info("[BL2A11y] EULA shown - accepting")
+    sdk_logging.info("[BL2A11y] EULA shown")
     tts.speak("License agreement. Accepting.", True)
     for method in ['Accept', 'OnAccept', 'Close']:
         try:
             getattr(obj, method)()
-            sdk_logging.info(f"[BL2A11y] EULA accepted via {method}")
             return
         except Exception:
             continue
 
 
 # =============================================================================
-# UPSELL — auto-dismiss
+# UPSELL
 # =============================================================================
 
 def _on_upsell_show(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
-    """UpsellNotification shown — auto-dismiss."""
     sdk_logging.info("[BL2A11y] Upsell shown - dismissing")
     tts.speak("Promotional popup. Dismissing.", True)
     try:
@@ -103,38 +120,40 @@ def _on_upsell_show(obj: UObject, args: WrappedStruct, ret, func: BoundFunction)
 
 
 # =============================================================================
-# MAIN MENU — announce and auto-continue
+# MAIN MENU — announce items, auto-continue
 # =============================================================================
 
 def _on_frontend_show(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
-    """FrontendGFxMovie shown — main menu. Auto-continue after delay."""
     global _at_main_menu
     _at_main_menu = True
     sdk_logging.info("[BL2A11y] Frontend/main menu shown")
+
+    # Mark SHiFT as done since we got past it
+    if not _is_shift_setup_done():
+        _mark_shift_done()
+
     tts.speak("Main menu. Loading your saved game in 5 seconds.", True)
 
     def _auto_continue():
         time.sleep(5.0)
         if not _at_main_menu or _game_loaded:
             return
-        sdk_logging.info("[BL2A11y] Auto-continuing saved game...")
+        sdk_logging.info("[BL2A11y] Auto-continuing...")
         tts.speak("Loading saved game.", True)
         try:
             for movie in unrealsdk.find_all("FrontendGFxMovie", exact=False):
                 if movie is None:
                     continue
-                # LaunchSaveGame(PlayThrough) — 0=Normal
                 try:
                     movie.LaunchSaveGame(0)
-                    sdk_logging.info("[BL2A11y] Continue via LaunchSaveGame(0)")
+                    sdk_logging.info("[BL2A11y] LaunchSaveGame(0) called")
                     return
                 except Exception as e:
                     sdk_logging.info(f"[BL2A11y] LaunchSaveGame(0): {e}")
-                # Try OpenCharacterSelect as fallback (for new players)
                 try:
                     movie.OpenCharacterSelect()
-                    sdk_logging.info("[BL2A11y] Opened character select")
-                    tts.speak("Character selection. Choose your character.", True)
+                    sdk_logging.info("[BL2A11y] OpenCharacterSelect called")
+                    tts.speak("Character selection.", True)
                     return
                 except Exception as e:
                     sdk_logging.info(f"[BL2A11y] OpenCharacterSelect: {e}")
@@ -144,15 +163,69 @@ def _on_frontend_show(obj: UObject, args: WrappedStruct, ret, func: BoundFunctio
 
 
 # =============================================================================
-# DIALOG BOXES — read text + auto-accept
+# MAIN MENU ITEM READING — hook into scrolling list focus changes
+# =============================================================================
+
+def _on_scrolling_list_focus(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
+    """Called when focus changes in a scrolling list (menu navigation)."""
+    try:
+        # Try to get the focused item index and text
+        idx = -1
+        for attr in ['Index', 'ItemIndex', 'SelectedIndex', 'FocusIndex']:
+            try:
+                val = getattr(args, attr, None)
+                if val is not None:
+                    idx = int(val)
+                    break
+            except Exception:
+                continue
+
+        sdk_logging.info(f"[BL2A11y] ScrollingList focus: idx={idx}")
+
+        # Main menu items (known order for BL2)
+        main_menu_items = [
+            "Continue",
+            "New Game",
+            "Downloadable Content",
+            "Mods",
+            "Options",
+            "Quit",
+        ]
+
+        if 0 <= idx < len(main_menu_items):
+            tts.speak(main_menu_items[idx], True)
+        elif idx >= 0:
+            tts.speak(f"Item {idx + 1}", True)
+    except Exception as e:
+        sdk_logging.info(f"[BL2A11y] ScrollingList focus error: {e}")
+
+
+def _on_menu_item_click(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
+    """Called when a menu item is clicked/selected."""
+    try:
+        idx = -1
+        for attr in ['Index', 'ItemIndex', 'SelectedIndex']:
+            try:
+                val = getattr(args, attr, None)
+                if val is not None:
+                    idx = int(val)
+                    break
+            except Exception:
+                continue
+        sdk_logging.info(f"[BL2A11y] Menu item clicked: idx={idx}")
+    except Exception:
+        pass
+
+
+# =============================================================================
+# DIALOG BOXES
 # =============================================================================
 
 def _on_dialog_show(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
-    """Any dialog box shown."""
-    sdk_logging.info(f"[BL2A11y] Dialog shown")
+    sdk_logging.info("[BL2A11y] Dialog shown")
     text = ""
     for attr in ['DialogText', 'MessageText', 'Body', 'Text', 'Description',
-                  'sDialog', 'sMessage', 'sBody', 'DialogBody', 'sText']:
+                  'sDialog', 'sMessage', 'sBody', 'DialogBody']:
         try:
             val = getattr(obj, attr, None)
             if val is not None:
@@ -169,96 +242,83 @@ def _on_dialog_show(obj: UObject, args: WrappedStruct, ret, func: BoundFunction)
     for method in ['Accept', 'OnAccept', 'AcceptClicked', 'OKClicked', 'Close']:
         try:
             getattr(obj, method)()
-            sdk_logging.info(f"[BL2A11y] Dialog accepted via {method}")
             return
         except Exception:
             continue
 
 
 # =============================================================================
-# LOADING SCREENS
+# LOADING / MAP TRANSITIONS
 # =============================================================================
 
 def _on_loading_movie(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
-    """Loading movie shown."""
     tts.speak("Loading.", True)
-    sdk_logging.info("[BL2A11y] Loading screen shown")
 
 
 def _on_loading_complete(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
-    """World loaded — now in gameplay."""
     global _at_main_menu, _game_loaded
     _at_main_menu = False
     _game_loaded = True
     _announced.discard("main_menu")
     _announced.discard("press_start")
-    sdk_logging.info("[BL2A11y] World loaded")
-    tts.speak("Loading complete. W A S D to move. I J K L to look around. Spacebar to fire. F to interact. F1 for health. F4 for full status.", True)
+    tts.speak(
+        "Loading complete. "
+        "W A S D to move. I J K L to look. Spacebar to fire. F to interact. "
+        "F1 health. F2 ammo. F4 full status. F12 stop speech.",
+        True
+    )
 
 
 def _on_map_change(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
-    """Map transition."""
     tts.speak("Loading.", True)
-    sdk_logging.info("[BL2A11y] Map change")
 
 
 # =============================================================================
-# PAUSE MENU
+# PAUSE, SPLASH
 # =============================================================================
 
 def _on_pause_show(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
-    """Pause menu shown."""
     tts.speak("Pause menu.", True)
 
 
-# =============================================================================
-# INTRO/SPLASH MOVIES
-# =============================================================================
-
 def _on_fullscreen_movie(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
-    """Fullscreen movie started (splash logos)."""
-    sdk_logging.info("[BL2A11y] Fullscreen movie playing")
     _announce_once("splash", "Loading Borderlands 2.", True)
 
 
 # =============================================================================
-# CONSOLE COMMANDS (backup)
+# CONSOLE COMMANDS
 # =============================================================================
 
 def _cmd_continue(line: str, cmd_len: int):
-    """Console: type 'continue' to load saved game."""
     tts.speak("Loading saved game.", True)
     try:
-        for movie in unrealsdk.find_all("FrontendGFxMovie", exact=False):
-            if movie is None:
-                continue
-            try:
-                movie.LaunchSaveGame(0)
-                return
-            except Exception:
-                pass
+        for m in unrealsdk.find_all("FrontendGFxMovie", exact=False):
+            if m is not None:
+                try:
+                    m.LaunchSaveGame(0)
+                    return
+                except Exception:
+                    pass
     except Exception:
         pass
 
 
 def _cmd_newgame(line: str, cmd_len: int):
-    """Console: type 'newgame' to start new game."""
     tts.speak("Starting new game.", True)
     try:
-        for movie in unrealsdk.find_all("FrontendGFxMovie", exact=False):
-            if movie is None:
-                continue
-            try:
-                movie.LaunchNewGame()
-                return
-            except Exception:
-                pass
+        for m in unrealsdk.find_all("FrontendGFxMovie", exact=False):
+            if m is not None:
+                try:
+                    m.LaunchNewGame()
+                    return
+                except Exception:
+                    pass
     except Exception:
         pass
 
 
 # =============================================================================
-# HOOK REGISTRATION
+# HOOKS
 # =============================================================================
 
 _HOOKS = [
@@ -273,31 +333,29 @@ _HOOKS = [
     ("Engine.WorldInfo:PreCommitMapChange", hooks.Type.PRE, "bl2a11y_mapchange", _on_map_change),
     ("WillowGame.PauseGFxMovie:Start", hooks.Type.POST, "bl2a11y_pause", _on_pause_show),
     ("Engine.GameViewportClient:ShowFullScreenMovie", hooks.Type.POST, "bl2a11y_fullscreen", _on_fullscreen_movie),
+    # Menu navigation — read focused item
+    ("WillowGame.FrontendGFxMovie:OnScrollingListItemFocus", hooks.Type.POST, "bl2a11y_menu_focus", _on_scrolling_list_focus),
+    ("WillowGame.FrontendGFxMovie:extGenericButtonClicked", hooks.Type.POST, "bl2a11y_menu_click", _on_menu_item_click),
 ]
 
 
 def register_hooks():
-    """Register all startup helper hooks."""
     from unrealsdk import commands
     for func_name, hook_type, identifier, callback in _HOOKS:
         try:
             hooks.add_hook(func_name, hook_type, identifier, callback)
         except Exception as e:
             sdk_logging.error(f"[BL2A11y] Failed to hook {func_name}: {e}")
-
     try:
         commands.add_command("continue", _cmd_continue)
         commands.add_command("newgame", _cmd_newgame)
     except Exception:
         pass
-
-    # Start delayed press-start detection (waits for splash movies to end)
     threading.Thread(target=_delayed_press_start_check, daemon=True).start()
     sdk_logging.info("[BL2A11y Startup] All hooks registered")
 
 
 def unregister_hooks():
-    """Remove all startup helper hooks."""
     for func_name, hook_type, identifier, callback in _HOOKS:
         try:
             hooks.remove_hook(func_name, hook_type, identifier)
