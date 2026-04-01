@@ -119,25 +119,67 @@ def read_skills_key() -> None:
 
 @keybind("Continue Game", key="F7", event_filter=EInputEvent.IE_Pressed)
 def continue_game_key() -> None:
-    """Quick-continue: load most recent save from main menu."""
+    """Continue most recent save / dismiss any popup."""
+    import unrealsdk as usdk
+    tts.speak("Continuing game.", True)
+    # First try to dismiss any blocking popups
     try:
-        pc = hud_reader.get_player_controller()
-        if pc is not None:
-            pc.ConsoleCommand("open menudefaultmap")
-        # Also try to invoke Continue on the frontend movie
-        for movie in __import__('unrealsdk').find_all("FrontendGFxMovie", exact=False):
-            if movie is not None:
+        for movie in usdk.find_all("GFxMoviePlayer", exact=False):
+            if movie is None:
+                continue
+            cls = str(movie.Class.Name).lower()
+            if any(x in cls for x in ["onlinemessage", "upsell", "dialog", "training"]):
+                for m in ['Close', 'Accept', 'OnAccept', 'AcceptClicked', 'OKClicked', 'Dismiss']:
+                    try:
+                        getattr(movie, m)()
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+    # Try to invoke continue on the frontend
+    try:
+        for movie in usdk.find_all("FrontendGFxMovie", exact=False):
+            if movie is None:
+                continue
+            # Try multiple ways to start continue
+            for method in ['ContinueGame', 'OnContinueGame', 'LaunchContinue',
+                           'SelectContinue', 'PlayGame', 'OnPlayGame']:
                 try:
-                    movie.ContinueGame()
-                except Exception:
-                    pass
-                try:
-                    movie.OnContinue()
+                    getattr(movie, method)()
+                    sdk_logging.info(f"[BL2A11y] Continue via {method}")
+                    return
                 except Exception:
                     pass
     except Exception:
         pass
-    tts.speak("Loading game.", True)
+    # Fallback: use console command to load into the game
+    try:
+        pc = hud_reader.get_player_controller()
+        if pc is not None:
+            pc.ConsoleCommand("open menudefaultmap")
+    except Exception:
+        pass
+
+
+@keybind("New Game", key="F8", event_filter=EInputEvent.IE_Pressed)
+def new_game_key() -> None:
+    """Start a new game from main menu."""
+    import unrealsdk as usdk
+    tts.speak("Starting new game.", True)
+    try:
+        for movie in usdk.find_all("FrontendGFxMovie", exact=False):
+            if movie is None:
+                continue
+            for method in ['NewGame', 'OnNewGame', 'LaunchNewGame', 'SelectNewGame',
+                           'StartNewGame', 'OnStartNewGame']:
+                try:
+                    getattr(movie, method)()
+                    sdk_logging.info(f"[BL2A11y] New game via {method}")
+                    return
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
 
 @keybind("Stop Speech", key="F12", event_filter=EInputEvent.IE_Pressed)
