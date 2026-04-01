@@ -103,14 +103,48 @@ def _on_upsell_show(obj: UObject, args: WrappedStruct, ret, func: BoundFunction)
 # =============================================================================
 
 def _on_frontend_show(obj: UObject, args: WrappedStruct, ret, func: BoundFunction):
-    """FrontendGFxMovie shown — the main menu. Try to auto-continue."""
+    """FrontendGFxMovie shown — the main menu. Auto-continue after delay."""
     global _at_main_menu
     _at_main_menu = True
     sdk_logging.info("[BL2A11y] Frontend/main menu shown")
-    tts.speak("Main menu.", True)
+    tts.speak("Main menu. Loading your saved game in 5 seconds.", True)
 
-    # Don't auto-continue — let the user choose with F7/F8.
-    # The raw input hook handles F7/F8 at this screen.
+    # Auto-continue after 5 seconds. Key input hooks don't work at the menu
+    # because Scaleform/Flash handles input directly without going through Unreal.
+    import threading
+    def _auto_continue():
+        import time
+        time.sleep(5.0)
+        if not _at_main_menu:
+            return  # Already left the menu
+        sdk_logging.info("[BL2A11y] Auto-continuing saved game...")
+        tts.speak("Loading saved game.", True)
+        try:
+            for movie in unrealsdk.find_all("FrontendGFxMovie", exact=False):
+                if movie is None:
+                    continue
+                try:
+                    movie.ConditionalLoadGame()
+                    sdk_logging.info("[BL2A11y] Continue via ConditionalLoadGame")
+                    return
+                except Exception as e:
+                    sdk_logging.info(f"[BL2A11y] ConditionalLoadGame: {e}")
+                try:
+                    movie.LaunchSaveGame()
+                    sdk_logging.info("[BL2A11y] Continue via LaunchSaveGame")
+                    return
+                except Exception as e:
+                    sdk_logging.info(f"[BL2A11y] LaunchSaveGame: {e}")
+                try:
+                    movie.LaunchNewGame()
+                    sdk_logging.info("[BL2A11y] Fallback: LaunchNewGame")
+                    return
+                except Exception as e:
+                    sdk_logging.info(f"[BL2A11y] LaunchNewGame: {e}")
+        except Exception as e:
+            sdk_logging.error(f"[BL2A11y] Auto-continue failed: {e}")
+        tts.speak("Could not auto-continue. Use tilde key to open console, then type continue.", True)
+    threading.Thread(target=_auto_continue, daemon=True).start()
 
 
 # =============================================================================
@@ -265,6 +299,49 @@ def _on_viewport_input_key(obj: UObject, args: WrappedStruct, ret, func: BoundFu
 # All hooks use the :Start method which fires when a movie ACTUALLY opens.
 # =============================================================================
 
+# =============================================================================
+# CONSOLE COMMANDS (backup — type in ~ console)
+# =============================================================================
+
+def _cmd_continue(line: str, cmd_len: int):
+    """Console command: type 'continue' to load saved game."""
+    sdk_logging.info("[BL2A11y] Console: continue command")
+    tts.speak("Loading saved game.", True)
+    try:
+        for movie in unrealsdk.find_all("FrontendGFxMovie", exact=False):
+            if movie is None:
+                continue
+            try:
+                movie.ConditionalLoadGame()
+                return
+            except Exception:
+                pass
+            try:
+                movie.LaunchSaveGame()
+                return
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _cmd_newgame(line: str, cmd_len: int):
+    """Console command: type 'newgame' to start new game."""
+    sdk_logging.info("[BL2A11y] Console: newgame command")
+    tts.speak("Starting new game.", True)
+    try:
+        for movie in unrealsdk.find_all("FrontendGFxMovie", exact=False):
+            if movie is None:
+                continue
+            try:
+                movie.LaunchNewGame()
+                return
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 _HOOKS = [
     # (unreal_function, hook_type, identifier, callback)
 
@@ -298,20 +375,27 @@ _HOOKS = [
     # Intro movies
     ("Engine.GameViewportClient:ShowFullScreenMovie", hooks.Type.POST, "bl2a11y_fullscreen_movie", _on_start_intro_movies),
 
-    # Input hooks — try multiple to catch F7/F8 at menus
-    ("WillowGame.WillowGFxMovie:InputKey", hooks.Type.PRE, "bl2a11y_movie_input", _on_viewport_input_key),
-    ("Engine.GFxMoviePlayer:FilterButtonInput", hooks.Type.PRE, "bl2a11y_filter_input", _on_viewport_input_key),
+    # Note: keyboard input hooks don't work at BL2 menus (Scaleform handles input directly).
+    # F7/F8 keybinds only work during gameplay. At main menu, we auto-continue after 5 seconds.
 ]
 
 
 def register_hooks():
     """Register all startup helper hooks."""
+    from unrealsdk import commands
     for func_name, hook_type, identifier, callback in _HOOKS:
         try:
             hooks.add_hook(func_name, hook_type, identifier, callback)
             sdk_logging.info(f"[BL2A11y] Hook registered: {func_name}")
         except Exception as e:
             sdk_logging.error(f"[BL2A11y] Failed to hook {func_name}: {e}")
+    # Register console commands
+    try:
+        commands.add_command("continue", _cmd_continue)
+        commands.add_command("newgame", _cmd_newgame)
+        sdk_logging.info("[BL2A11y] Console commands registered: continue, newgame")
+    except Exception as e:
+        sdk_logging.error(f"[BL2A11y] Console command registration failed: {e}")
     sdk_logging.info("[BL2A11y Startup] All hooks registered")
 
 
